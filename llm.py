@@ -101,9 +101,6 @@ async def race_models(primary_task, backup_task, timeout=5.0, logger=None, task_
     return None
 
 
-
-
-
 def parse_attachments(raw: str | None) -> dict:
     """Parse attachments JSON into {images, documents}; legacy list → images."""
     if not raw:

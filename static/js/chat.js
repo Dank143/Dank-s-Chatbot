@@ -410,8 +410,15 @@ export async function openChat(chatId) {
     i++;
   }
 
-  // Restore the models in the UI selectors from the last conversation turn
+  // Restore the models in the UI selectors from the last conversation turn.
+  // Also sync state.provider so the picker opens on the correct NIM/Ollama tab.
   if (lastModel1) {
+    state.selectedModel = lastModel1;
+    const inNim = state.modelsNim?.some(m => m.id === lastModel1);
+    const inOllama = state.modelsOllama?.some(m => m.id === lastModel1);
+    if (inNim && state.provider !== 'nim') setProvider('nim');
+    else if (inOllama && state.provider !== 'ollama') setProvider('ollama');
+    // Re-apply the correct selected model because setProvider may have reset it.
     state.selectedModel = lastModel1;
     updateModelLabel();
   }

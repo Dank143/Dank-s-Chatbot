@@ -93,7 +93,10 @@ export function updateModelLabel() {
     return;
   }
 
-  const m = state.models.find((x) => x.id === state.selectedModel);
+  // Search across all provider lists so a cross-provider duo model resolves correctly.
+  const m = state.models?.find((x) => x.id === state.selectedModel)
+         || state.modelsNim?.find((x) => x.id === state.selectedModel)
+         || state.modelsOllama?.find((x) => x.id === state.selectedModel);
   modelSelectorLbl.textContent = m ? m.name : state.selectedModel || 'Select model';
   const badgeEl = $('modelSelectorBadge');
   if (badgeEl && m) {
@@ -179,6 +182,13 @@ export function selectModel(id) {
     selectModel2(id);
     return;
   }
+  // Sync state.provider to whichever provider owns this model so the picker
+  // opens on the correct tab next time. Re-apply id after setProvider since
+  // setProvider resets selectedModel to the provider's default.
+  const inNim = state.modelsNim?.some(m => m.id === id);
+  const inOllama = state.modelsOllama?.some(m => m.id === id);
+  if (inNim && state.provider !== 'nim') setProvider('nim');
+  else if (inOllama && state.provider !== 'ollama') setProvider('ollama');
   state.selectedModel = id;
   updateModelLabel();
   closeDropdown();
@@ -211,17 +221,31 @@ export function openDropdown() {
     'nim': state.hasKeyNim,
     'ollama': state.hasKeyOllama
   };
-  const anyHasKey = Object.values(hasKeyMap).some(v => v);
+
+  // When picking for the duo right slot, determine which provider the current
+  // selectedModel2 belongs to and pre-select that provider's pill/list.
+  let effectiveProvider = state.provider;
+  if (state._pickingSlot === 'right' && state.selectedModel2) {
+    const inNim = state.modelsNim?.some(m => m.id === state.selectedModel2);
+    const inOllama = state.modelsOllama?.some(m => m.id === state.selectedModel2);
+    if (inNim) effectiveProvider = 'nim';
+    else if (inOllama) effectiveProvider = 'ollama';
+  }
 
   document.querySelectorAll('#pickerProviderPill .pill-opt').forEach(btn => {
-    btn.classList.toggle('active', state.provider && btn.dataset.provider === state.provider);
+    btn.classList.toggle('active', effectiveProvider && btn.dataset.provider === effectiveProvider);
 
     // Gray out/disable the pill toggle if the API key for that provider is blank
     const prov = btn.dataset.provider;
     btn.disabled = !hasKeyMap[prov];
   });
   setTimeout(() => modelSearch.focus(), 50);
-  renderDropdownList(state.models);
+
+  // Show the model list for the effective provider (may differ from state.provider for duo right slot).
+  const listToShow = effectiveProvider === 'nim' ? (state.modelsNim || [])
+                   : effectiveProvider === 'ollama' ? (state.modelsOllama || [])
+                   : state.models;
+  renderDropdownList(listToShow);
 }
 
 export function closeDropdown() {

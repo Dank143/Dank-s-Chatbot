@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from collections import OrderedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -52,11 +53,40 @@ _SKIP_DOMAINS = {
 
 
 
+class _BoundedLRU(OrderedDict):
+    """dict-like cache capped at `maxsize`, evicting the least-recently-used
+    entry once full. Plain dicts here (unlike cache.py's TTL-based
+    `_cache`) would grow forever over long uptimes as more distinct hosts
+    are seen — this caps memory while still remembering the hosts actually
+    being hit repeatedly."""
+
+    def __init__(self, maxsize: int = 2000):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        if key in self:
+            return self[key]
+        return default
+
+
 # MediaWiki article-path prefixes.
 _MW_PAGE_PREFIXES = ("/wiki/", "/w/")
 _MW_API_CANDIDATES = ("/w/api.php", "/api.php")
-# host -> working api.php url (or None); lazily probed.
-_mw_endpoint_cache: dict[str, "str | None"] = {}
+# host -> working api.php url (or None); lazily probed. Bounded LRU.
+_mw_endpoint_cache: "_BoundedLRU" = _BoundedLRU(maxsize=2000)
 
 
 def skip(url: str, allowed: "frozenset[str]" = frozenset()) -> bool:
@@ -240,7 +270,8 @@ _FETCHERS = {
     "trafilatura": _trafilatura_fetch,
 }
 # host -> last-successful fetcher. Skips the 2 that always fail there.
-_host_fetcher: dict[str, str] = {}
+# Bounded LRU — see _BoundedLRU above.
+_host_fetcher: "_BoundedLRU" = _BoundedLRU(maxsize=2000)
 
 
 async def _race(url: str, labels: list[str]) -> tuple[str, str]:
@@ -265,7 +296,10 @@ async def _race(url: str, labels: list[str]) -> tuple[str, str]:
 
 async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
     """Fetch page text, preferring the host's known-good fetcher.
-    Falls back to playwright (cloudflare) then the snippet."""
+    Races mediawiki/jina/trafilatura (see _FETCHERS), then falls back to
+    the search snippet if none of them produce usable content. (No
+    Playwright — it was removed for overhead reasons; this is intentional,
+    not a missing fallback.)"""
     host = urlparse(url).hostname or ""
     
     if host == "reddit.com" or host.endswith(".reddit.com"):
@@ -307,4 +341,3 @@ async def shutdown_fetchers():
     await _jina_client.aclose()
     await _fetch_client.aclose()
     await _mw_client.aclose()
-    

@@ -4,6 +4,7 @@ import time
 
 from fastembed import TextEmbedding
 from config import load_config
+from .cache import get_cached_config
 
 _log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ async def warmup_embedder() -> None:
             return
         _last_load_attempt = time.monotonic()
         try:
-            cfg = load_config()
+            cfg = await get_cached_config(load_config)
             name = cfg.get("embed_model_fastembed", _DEFAULT_MODEL)
             _model = await asyncio.to_thread(TextEmbedding, name)
             _log.info("fastembed model %r loaded", name)

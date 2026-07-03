@@ -95,16 +95,27 @@ export function setupEventListeners() {
       const btn = e.target.closest('.pill-opt');
       if (!btn || btn.disabled) return;
       const newProv = btn.dataset.provider;
-      if (newProv === state.provider) return;
 
+      // If we clicked inside the Model Picker while selecting for the duo RIGHT slot,
+      // don't change the global provider — just swap the displayed list so that the
+      // left-slot model and state.provider remain unaffected.
+      if (pill.id === 'pickerProviderPill' && state._pickingSlot === 'right') {
+        pill.querySelectorAll('.pill-opt').forEach(b => b.classList.toggle('active', b === btn));
+        const listToShow = newProv === 'nim' ? (state.modelsNim || [])
+                         : newProv === 'ollama' ? (state.modelsOllama || [])
+                         : [];
+        renderDropdownList(listToShow);
+        return;
+      }
+
+      if (newProv === state.provider) return;
       setProvider(newProv);
 
       // If we clicked inside Settings, reload settings for the new provider.
       if (pill.id === 'settingsProviderPill') {
         openSettings();
       }
-      // If we clicked inside the Model Picker, we already synced state,
-      // so just re-render the list and update the input label.
+      // If we clicked inside the Model Picker (left slot), re-render and update label.
       if (pill.id === 'pickerProviderPill') {
         renderDropdownList(state.models);
         updateModelLabel();
@@ -221,7 +232,18 @@ export function setupEventListeners() {
 
   modelSearch.addEventListener('input', () => {
     const q = modelSearch.value.toLowerCase();
-    const filtered = state.models.filter(
+    // Determine the source list: for the duo right slot, use whichever provider pill is active.
+    let sourceList;
+    if (state._pickingSlot === 'right') {
+      const activePill = document.querySelector('#pickerProviderPill .pill-opt.active');
+      const activeProv = activePill?.dataset?.provider;
+      sourceList = activeProv === 'nim' ? (state.modelsNim || [])
+                 : activeProv === 'ollama' ? (state.modelsOllama || [])
+                 : state.models;
+    } else {
+      sourceList = state.models;
+    }
+    const filtered = sourceList.filter(
       (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
     );
     renderDropdownList(filtered);

@@ -8,7 +8,7 @@ from datetime import datetime
 from config import load_config
 from .fetcher import fetch_content, skip, warmup_jina, shutdown_fetchers
 from .cache import _cache_get, _cache_set, _NEGATIVE_CACHE_TTL
-from .engines import _searxng_search, _ddg_search, _tavily_search, _FANDOM_ALLOW, shutdown_engines
+from .engines import _searxng_search, _ddg_search, _tavily_search, _FANDOM_ALLOW, shutdown_engines, SEARXNG_URL
 from .llm_processing import _rewrite_query, _rerank, _REGEX_INTENTS
 from .embedder import warmup_embedder
 _log = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ async def warmup() -> None:
         try:
             import httpx
             async with httpx.AsyncClient(timeout=20.0) as client:
-                await client.get("http://localhost:8888/search", params={"q": "wikipedia", "format": "json"})
+                await client.get(SEARXNG_URL, params={"q": "wikipedia", "format": "json"})
             _log.debug("SearXNG warmup ok")
         except Exception:
             _log.debug("SearXNG warmup failed", exc_info=True)
@@ -173,6 +173,25 @@ async def _run_with_hard_timeout(
         # Short negative-cache: a query that reliably blows the 20s ceiling
         # (e.g. a downstream outage) would otherwise re-run the full pipeline
         # — rewrite, cascade, fetch — on every single retry.
+        _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
+        return result
+    except Exception:
+        # Every individual engine/fetch call already catches its own
+        # exceptions internally and degrades to []/"" — but nothing
+        # previously guarded the ~400-line orchestration body itself. An
+        # unexpected exception on an untested code path (e.g. a malformed
+        # API response) would otherwise propagate straight up into whatever
+        # calls fetch_web_context() (a Discord message handler, etc.),
+        # crashing or hanging the caller over a single bad query instead of
+        # degrading gracefully like every other failure mode in this
+        # pipeline does.
+        _log.exception("fetch_web_context unexpected error for %r", query)
+        result = ("", {
+            "site": "general", "intent": "general",
+            "original_query": query, "rewritten_query": query,
+            "query": query, "fallback": True,
+            "engine": "", "sources": [], "error": True
+        })
         _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
         return result
 
@@ -470,9 +489,8 @@ async def _fetch_web_context_inner(
 
     if reranked_ok:
         debug["rerank"] = "embed"
-        _high_confidence = [r for r in results if r.get("score", 0.0) >= 0.25]
-        if len(_high_confidence) >= _fetch_pool_size:
-            results = _high_confidence
+        _high_confidence = [r for r in results if r.get("score", 0.0) >= 0.4]
+        results = _high_confidence
         # else: keep the full (score-sorted) set — filtering down to fewer
         # than _fetch_pool_size candidates here would strand the degradation
         # tiers below with nothing left to backfill from, even though lower-
@@ -515,7 +533,6 @@ async def _fetch_web_context_inner(
                 completed_fetches[res_r["url"]] = (res_r, content, method)
             except Exception as e:
                 _log.debug("Fetch task failed: %s", e)
-                
         # Early exit: do we have enough acceptable results?
         accepted_count = sum(
             1 for u, (res_r, content, method) in completed_fetches.items()

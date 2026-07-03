@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from config import load_config, provider_for_model, _PROVIDERS
+from config import load_config, provider_for_model, provider_model_info, _PROVIDERS
 from database import db_execute, run_db_task, now_iso
 from search import fetch_web_context, inject_web_context
 from llm import build_messages, is_asking_about_creator, llm_stream, reasoning_controls, race_models, get_client
@@ -66,6 +66,15 @@ def _build_request(history, today: str, model: str):
     if len(history) > max_turns:
         history = history[-max_turns:]
     extra_create, extra_system = reasoning_controls(_model_reasoning(model))
+    # Remove asterisks used in YAML names (e.g. "Gemma 4 31B*")
+    model_name = provider_model_info(model).get("name", "").replace("*", "").strip()
+    model_identity = f"You are {model_name}."
+
+    if extra_system:
+        extra_system = f"{model_identity}\n{extra_system}"
+    else:
+        extra_system = model_identity
+
     messages = build_messages(history, defaults.get("system_prompt"), today, extra_system)
     prov = provider_for_model(model)
     return (get_client(prov), messages,

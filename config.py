@@ -90,6 +90,16 @@ def provider_for_model(model_id: str) -> str:
     return "nim"
 
 
+def provider_model_info(model_id: str) -> dict | None:
+    """Return the model entry from models.yaml for the given model id."""
+    cfg = load_config()
+    for p in _PROVIDERS:
+        for m in cfg.get(f"models_{p}", []):
+            if m.get("id") == model_id:
+                return m
+    return None
+
+
 def set_env_key(provider: str, key: str) -> None:
     """Write the API key for *provider* to .env and update os.environ in-process."""
     env_var = _ENV_KEY_MAP.get(provider, "NVIDIA_API_KEY")

@@ -5,12 +5,20 @@ import os
 import time
 import httpx
 from ddgs import DDGS
+from config import load_config
 from .fetcher import skip
 
 _log = logging.getLogger(__name__)
 
 _DDG_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 _FANDOM_ALLOW = frozenset({"fandom.com"})
+
+# Read once at import (same pattern pipeline.py already uses for _MAX_URLS)
+# so a container/host change is a config edit, not a code edit. This is a
+# startup-time value, not a per-request one, so a plain synchronous
+# load_config() call here is fine — it's not on the hot path.
+_cfg = load_config()
+SEARXNG_URL = _cfg.get("searxng_url", "http://localhost:8888/search")
 
 _limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
 _searxng_client = httpx.AsyncClient(timeout=7.5, limits=_limits)
@@ -46,6 +54,7 @@ class _CircuitBreaker:
                 "skipping for %.0fs", self.name, self._failures, self.cooldown
             )
 
+
 _searxng_breaker = _CircuitBreaker("SearXNG", threshold=3, cooldown=30.0)
 _ddg_breaker = _CircuitBreaker("DuckDuckGo", threshold=3, cooldown=20.0)
 _tavily_breaker = _CircuitBreaker("Tavily", threshold=3, cooldown=20.0)
@@ -58,7 +67,7 @@ async def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
         # Strict timeout so a cold SearXNG container doesn't hang the UI for 30s.
         resp = await asyncio.wait_for(
             _searxng_client.get(
-                "http://localhost:8888/search",
+                SEARXNG_URL,
                 params={"q": query, "format": "json", "engines": "google,bing,duckduckgo,wikipedia"}
             ),
             timeout=5.0
@@ -121,9 +130,13 @@ async def _ddg_search(
     # engine failure, and shouldn't be able to trip the circuit.
     if last_exc is not None:
         _ddg_breaker.record_failure()
+        _log.warning("DDGS multi-backend failed for %r: %s", search_query, last_exc)
     else:
+        # Every attempt returned cleanly with zero matches — a legitimate
+        # "no results", not a failure, so this shouldn't be logged at
+        # warning level or read as an engine outage when grepping logs.
         _ddg_breaker.record_success()
-    _log.warning("DDGS multi-backend failed for %r: %s", search_query, last_exc)
+        _log.debug("DDGS multi-backend returned no results for %r", search_query)
     return []
 
 async def _tavily_search(query: str, max_results: int = 5) -> list[dict]:

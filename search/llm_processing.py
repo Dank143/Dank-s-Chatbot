@@ -7,6 +7,7 @@ from datetime import datetime
 
 from config import load_config
 from llm import race_models, get_client
+from .cache import get_cached_config
 
 _log = logging.getLogger(__name__)
 
@@ -72,7 +73,11 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
             _log.warning("Query rewrite inner error for %s: %s", model, e)
             return None
 
-    cfg = load_config()
+    # Cached + off-thread: this runs on every non-regex-matched query, so a
+    # raw load_config() call here would re-pay any file I/O the loader does
+    # on every single request, synchronously, blocking the event loop for
+    # every other in-flight request too. See cache.get_cached_config.
+    cfg = await get_cached_config(load_config)
     nim_model = cfg.get("rewrite_model_nim")
     ollama_model = cfg.get("rewrite_model_ollama")
     
@@ -120,4 +125,3 @@ async def _rerank(query: str, results: list[dict]) -> bool:
     for r, v in zip(results, pv):
         r["score"] = _cosine(q, v)
     return True
-    

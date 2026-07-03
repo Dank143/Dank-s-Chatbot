@@ -85,8 +85,22 @@ export function scrollToBottom() {
 }
 
 export function autoResize() {
+  const isScrolledToBottom = messageInput.scrollHeight - messageInput.clientHeight <= messageInput.scrollTop + 5;
+  const scrollTop = messageInput.scrollTop;
+  const scrollY = window.scrollY;
+
   messageInput.style.height = 'auto';
-  messageInput.style.height = Math.min(messageInput.scrollHeight, 220) + 'px';
+  const newHeight = Math.min(messageInput.scrollHeight, 220);
+  messageInput.style.height = newHeight + 'px';
+
+  if (isScrolledToBottom) {
+    messageInput.scrollTop = messageInput.scrollHeight;
+  } else {
+    messageInput.scrollTop = scrollTop;
+  }
+  if (window.scrollY !== scrollY) {
+    window.scrollTo(window.scrollX, scrollY);
+  }
 }
 
 export function updateSendBtn() {

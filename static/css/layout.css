@@ -264,7 +264,7 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   width: 100%;
   position: relative;
-  margin-bottom: 60px;
+  margin-bottom: 55px;
 }
 
 .duo-message-row::before {

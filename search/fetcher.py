@@ -10,41 +10,14 @@ try:
 except ImportError:
     _trafilatura = None
 
-try:
-    from patchright.async_api import async_playwright as _patchright
-except ImportError:
-    _patchright = None
-
 _log = logging.getLogger(__name__)
 
-_playwright_instance = None
-_browser_instance = None
-
-async def warmup_browser():
-    global _playwright_instance, _browser_instance
-    if _patchright is None:
-        return
-    if _browser_instance is None:
-        try:
-            # Uvicorn on Windows uses SelectorEventLoop, which lacks subprocess support.
-            if sys.platform == "win32" and isinstance(asyncio.get_running_loop(), getattr(asyncio, "SelectorEventLoop", type(None))):
-                _log.debug("Playwright is disabled (Windows SelectorEventLoop lacks subprocess support).")
-                return
-                
-            _playwright_instance = await _patchright().start()
-            _browser_instance = await _playwright_instance.chromium.launch(headless=True)
-            _log.debug("Playwright browser warmup ok")
-        except Exception:
-            _log.debug("Playwright browser warmup failed", exc_info=True)
-
-async def shutdown_browser():
-    global _playwright_instance, _browser_instance
-    if _browser_instance:
-        await _browser_instance.close()
-        _browser_instance = None
-    if _playwright_instance:
-        await _playwright_instance.stop()
-        _playwright_instance = None
+async def warmup_jina():
+    try:
+        await _jina_client.get("https://r.jina.ai/https://example.com")
+        _log.debug("Jina warmup ok")
+    except Exception:
+        _log.debug("Jina warmup failed", exc_info=True)
 
 _JINA_BASE = "https://r.jina.ai/"
 _MAX_CHARS = 20000
@@ -77,7 +50,7 @@ _SKIP_DOMAINS = {
     "fandom.com",
 }
 
-_CLOUDFLARE_DOMAINS = {"reddit.com"}
+
 
 # MediaWiki article-path prefixes.
 _MW_PAGE_PREFIXES = ("/wiki/", "/w/")
@@ -218,29 +191,46 @@ async def _mediawiki_fetch(url: str) -> str:
         return ""
 
 
-def _is_cloudflare_domain(url: str) -> bool:
-    host = urlparse(url).hostname or ""
-    return any(host == d or host.endswith("." + d) for d in _CLOUDFLARE_DOMAINS)
 
-
-async def _playwright_fetch(url: str) -> str:
-    if _patchright is None or _trafilatura is None or _browser_instance is None:
-        return ""
+async def _reddit_fetch(url: str) -> str:
+    """Fast JSON API fetch for reddit URLs instead of scraping."""
     try:
-        ctx = await _browser_instance.new_context(
-            viewport={"width": 1280, "height": 800},
-        )
-        try:
-            page = await ctx.new_page()
-            await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
-            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
-            html = await page.content()
-        finally:
-            await ctx.close()
-        return await _extract(html)
+        parsed = urlparse(url)
+        path = parsed.path
+        if not path.endswith('.json'):
+            if path.endswith('/'):
+                path = path[:-1]
+            path += '.json'
+            
+        json_url = f"{parsed.scheme}://{parsed.netloc}{path}"
+        if parsed.query:
+            json_url += f"?{parsed.query}"
+            
+        resp = await _fetch_client.get(json_url, headers=_BROWSER_HEADERS, follow_redirects=True)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if not isinstance(data, list) or len(data) < 2:
+            return ""
+            
+        post_data = data[0]["data"]["children"][0]["data"]
+        title = post_data.get("title", "")
+        selftext = post_data.get("selftext", "")
+        
+        content = f"Title: {title}\nPost: {selftext}\n\nTop Comments:\n"
+        
+        comments = data[1]["data"]["children"]
+        for c in comments[:5]:
+            c_data = c.get("data", {})
+            body = c_data.get("body", "")
+            if body and body not in ("[deleted]", "[removed]"):
+                content += f"- {body}\n"
+                
+        return truncate(content) if len(content) >= 50 else ""
     except Exception:
-        _log.debug("Playwright fetch failed for %r", url, exc_info=True)
+        _log.debug("Reddit JSON fetch failed for %r", url, exc_info=True)
         return ""
+
 
 
 # Fetcher coroutines by label, in default race order.
@@ -277,47 +267,26 @@ async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
     """Fetch page text, preferring the host's known-good fetcher.
     Falls back to playwright (cloudflare) then the snippet."""
     host = urlparse(url).hostname or ""
+    
+    if host == "reddit.com" or host.endswith(".reddit.com"):
+        text = await _reddit_fetch(url)
+        if text:
+            return text, "reddit"
+
     known = _host_fetcher.get(host)
 
     # Fast path: try the host's proven fetcher alone.
     if known:
-        k_task = asyncio.create_task(_FETCHERS[known](url))
-        tasks = [k_task]
-        t_task = None
-        
-        if known != "trafilatura":
-            t_task = asyncio.create_task(_trafilatura_fetch(url))
-            tasks.append(t_task)
-            
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            try:
-                text = task.result()
-                if text:
-                    for p in pending: p.cancel()
-                    winning_label = known if task == k_task else "trafilatura"
-                    if winning_label != known:
-                        _host_fetcher[host] = winning_label
-                    return text, winning_label
-            except Exception:
-                pass
-                
-        if pending:
-            done, pending = await asyncio.wait(pending)
-            for task in done:
-                try:
-                    text = task.result()
-                    if text:
-                        winning_label = known if task == k_task else "trafilatura"
-                        if winning_label != known:
-                            _host_fetcher[host] = winning_label
-                        return text, winning_label
-                except Exception:
-                    pass
+        try:
+            text = await asyncio.wait_for(_FETCHERS[known](url), timeout=2.5)
+            if text:
+                return text, known
+        except (Exception, asyncio.TimeoutError):
+            pass
 
     # Race the remaining fetchers (all of them if no known-good, or the others
     # if the known one just missed this page).
-    skip_labels = {known, "trafilatura"} if known else set()
+    skip_labels = {known} if known else set()
     rest = [l for l in _FETCHERS if l not in skip_labels]
     
     if rest:
@@ -326,12 +295,16 @@ async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
             _host_fetcher[host] = label
             return text, label
 
-    if _is_cloudflare_domain(url):
-        text = await _playwright_fetch(url)
-        if text:
-            return text, "playwright"
 
     # Snippet fallback only if it carries real text (>= 80 chars).
     if len(snippet.strip()) >= _MIN_SNIPPET:
         return snippet[:1000], "snippet"
     return "", "failed"
+
+
+async def shutdown_fetchers():
+    """Close HTTPX clients on shutdown."""
+    await _jina_client.aclose()
+    await _fetch_client.aclose()
+    await _mw_client.aclose()
+    

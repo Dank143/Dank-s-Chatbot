@@ -2,7 +2,7 @@
 
 Free-tier and self-hosted web search and content retrieval for the chatbot. Given a user query, it discovers relevant sources, fetches their content, ranks it semantically, and returns a context block that gets injected into the LLM prompt.
 
-No paid APIs. Discovery uses self-hosted SearXNG and DuckDuckGo (via `ddgs`) plus open MediaWiki APIs; content is fetched via Jina Reader, direct extraction (trafilatura), MediaWiki APIs, and Playwright; ranking uses local or NIM embeddings.
+No paid APIs. Discovery uses self-hosted SearXNG and DuckDuckGo (via `ddgs`) plus open MediaWiki APIs; content is fetched via Jina Reader, direct extraction (trafilatura), MediaWiki APIs, and native JSON APIs; ranking uses local ONNX embeddings.
 
 ## Module Layout
 
@@ -10,9 +10,9 @@ No paid APIs. Discovery uses self-hosted SearXNG and DuckDuckGo (via `ddgs`) plu
 |------|----------------|
 | `pipeline.py` | Orchestration: rewrite → route → staggered search cascade → rerank → time-boxed fetch → assemble |
 | `engines.py` | Search engine integrations: SearXNG (primary), DuckDuckGo (secondary), Tavily (tertiary). |
-| `fetcher.py` | Content retrieval (Jina, trafilatura, MediaWiki, Playwright) + skip rules + host-fetcher caching. |
+| `fetcher.py` | Content retrieval (Jina, trafilatura, MediaWiki, Native JSON APIs) + skip rules + host-fetcher caching. |
 | `llm_processing.py` | LLM-based query rewriting, intent classification, and semantic reranking using embeddings. |
-| `media.py` | YouTube media search and link extraction. |
+| `embedder.py` | Local semantic embeddings via fastembed (ONNX, CPU) — no external embedding API calls. |
 | `cache.py` | Simple in-memory caching layer for search results. |
 
 Entry point: `fetch_web_context(query, num_urls, history_context) -> (context, debug)`.
@@ -31,7 +31,6 @@ query + history
    │  Else, race Ollama vs NIM to rewrite query & detect intent (5s timeout).
    ▼
 [3] Routing
-   ├─ intent == "media" ──► YouTube links only (no scraping) ──► return
    ├─ intent (reddit/cambridge/docs) ──► build site-scoped query
    ├─ intent == "wiki" (entity) ──► Wiki discovery (MediaWiki/Fandom APIs)
    └─ else ──► general query
@@ -46,7 +45,7 @@ query + history
    │  Merge API-discovered seed URLs + Search Cascade results, deduped.
    ▼
 [6] Semantic Reranking
-   │  Query and result snippets are embedded using Ollama vs NIM embeddings.
+   │  Query and result snippets are embedded locally using ONNX fastembed.
    │  Results are sorted by cosine similarity; junk pages are demoted.
    ▼
 [7] Time-Boxed Hybrid Fetch Collection
@@ -73,7 +72,6 @@ A fast-path checks for basic intents using Regex (e.g., matching the word "opini
 If no match, a race between Ollama and NIM models determines the standalone search query and intent, resolving pronouns from conversation history (e.g., "his voicelines" → "Pantheon voicelines"). The current year is appended for freshness.
 
 Keyword rules map the query to an intent:
-- **media**: YouTube (links only)
 - **opinion**: reddit.com (site-scoped)
 - **dictionary**: dictionary.cambridge.org (site-scoped)
 - **documentation**: adds `documentation` suffix
@@ -92,8 +90,8 @@ Instead of blasting all engines simultaneously (which causes rate limits) or wai
 - **DuckDuckGo** starts if SearXNG doesn't respond within 2.0s (1.0s for fallbacks).
 - **Tavily** starts if both fail to return results.
 
-### [5] Semantic Reranking (`llm_processing.py`)
-Results are reranked using semantic embeddings. Ollama and NIM embedding models are raced concurrently. This ensures results conceptually similar to the query bubble up, even if keywords mismatch (e.g. "voicelines" ≈ a page titled "Audio"). Junk meta pages (Category:, Talk:) are demoted.
+### [5] Semantic Reranking (`llm_processing.py` & `embedder.py`)
+Results are reranked using semantic embeddings. A local ONNX embedding model runs in-process — no network round trip. This ensures results conceptually similar to the query bubble up, even if keywords mismatch (e.g. "voicelines" ≈ a page titled "Audio"). Junk meta pages (Category:, Talk:) are demoted.
 
 ### [6] Time-Boxed Fetching (`fetcher.py` & `pipeline.py`)
 To prevent a single slow website from freezing the chatbot, `pipeline.py` uses a **Time-Boxed Hybrid Loop**. 
@@ -106,7 +104,7 @@ Fetch methods race or fallback gracefully:
 - **MediaWiki API**: Used for known wikis.
 - **Jina Reader**: Fallback for JS-heavy sites.
 - **Trafilatura**: Fast direct HTML extraction.
-- **Playwright**: Used specifically for Cloudflare-protected domains like Reddit.
+- **Native APIs**: Bypasses Cloudflare on supported sites (like Reddit) using direct JSON endpoints instead of scraping.
 
 A per-host cache remembers which fetcher succeeded last time, avoiding redundant fallback attempts and saving significant latency.
 
@@ -117,13 +115,22 @@ To avoid returning an empty context, content goes through layered filters:
 3. **Snippet**: DDG snippets, preferring those that name the entity.
 
 ## Reliability Features
-- **Concurrent Provider Racing**: LLM rewrites and embeddings race Ollama vs NIM, falling back seamlessly if one provider is down.
+- **Concurrent Provider Racing**: LLM rewrites race Ollama vs NIM, falling back seamlessly if one provider is down (note: embeddings now run safely locally).
 - **Hard Context Limits**: The final text is strictly truncated to 25,000 characters to protect the LLM context window.
+- **Shared Request Deadline**: A single soft deadline (~17s, under the 20s hard ceiling) is threaded through the search cascade, fallback cascade, semantic rerank, and fetch loop. Each stage clamps its own timeout against the remaining budget instead of assuming a fresh window, so a slow early stage shrinks — rather than blows past — the time left for later stages.
+- **SearXNG Circuit Breaker**: After 3 consecutive SearXNG failures, requests skip it entirely for a 30s cooldown instead of paying its full internal timeout on every call during an outage.
+- **Negative Caching**: Empty results and hard timeouts are cached for 30s (vs. the normal 5-minute TTL), absorbing bursty repeat requests without redoing the full pipeline, while recovering quickly once the underlying issue clears.
+- **Embedder Load Backoff**: If the local embedding model fails to load, retries back off for 30s instead of re-attempting the load on every request.
+- **Bounded Search Retries**: DuckDuckGo's internal retry loop is capped at 2 attempts with short backoff, since the caller already wraps it in a hard per-phase timeout.
 
 ## Configuration Defaults
 
 - `defaults.max_search_urls`: 5 sources per query
 - Fetch max chars: 20000
 - Jina timeout: 5.0s
-- Playwright timeout: 10.0s
-- Rerank/Rewrite race timeouts: 5.0s
+- Rewrite race timeout: 5.0s
+- Embed model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (changing this requires a restart).
+
+## Setup
+On first boot, the system will download the fastembed model (~220MB). If running in Docker, pre-download it during the build step:
+`RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"`

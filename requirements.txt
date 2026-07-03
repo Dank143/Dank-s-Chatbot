@@ -14,3 +14,4 @@ httpx[http2]>=0.27.0
 trafilatura>=1.12.0
 lxml_html_clean>=0.4.0
 types-openpyxl
+fastembed>=0.8.0

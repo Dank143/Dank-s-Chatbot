@@ -22,9 +22,19 @@ title_model_ollama: gemma4:31b-cloud
 rewrite_model_nim: qwen/qwen3-next-80b-a3b-instruct
 rewrite_model_ollama: gemma4:31b-cloud
 
-embed_model_nim: nvidia/nv-embedqa-e5-v5
+embed_model_fastembed: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
 # There are other models, yet they suffer with major inconsistancies. If you don't mind gambling on their speed, include them here.
+
+# Retiring on 15/07/26:
+  # devstral-small-2:24b 
+  # gemma3:27b 
+  # glm-4.7 
+  # minimax-m2.1 
+  # ministral-3:14b 
+  # qwen3-coder-next 
+  # qwen3-coder:480b 
+
 models_nim: 
   # DeepSeek
   # - { id: deepseek-ai/deepseek-v4-pro,                    name: "DeepSeek V4 Pro",            icon: "deepseek-color.png",   stats: {consistency: 5, accuracy: 10, latency: 6, mastery: 9} }
@@ -103,3 +113,4 @@ models_ollama:
   
   # Zhipu AI
   - { id: glm-4.7:cloud,                  name: "GLM 4.7",                   icon: "zai.png",               stats: {consistency: 8, accuracy: 9, latency: 9, mastery: 8} } 
+

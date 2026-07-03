@@ -202,7 +202,7 @@ async def send_message(chat_id: str, body: SendMessageBody):
             yield f"data: {json.dumps({'type': 'searching', 'query': body.content})}\n\n"
             try:
                 web_ctx, search_debug = await asyncio.wait_for(
-                    fetch_web_context(body.content, history_context=history_context), timeout=22.0
+                    fetch_web_context(body.content, history_context=history_context, chat_id=chat_id), timeout=22.0
                 )
             except asyncio.TimeoutError:
                 web_ctx, search_debug = "", {
@@ -356,7 +356,7 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
             yield f"data: {json.dumps({'type': 'searching', 'query': last_user})}\n\n"
             try:
                 web_ctx, search_debug = await asyncio.wait_for(
-                    fetch_web_context(last_user, history_context=history_context), timeout=22.0
+                    fetch_web_context(last_user, history_context=history_context, chat_id=chat_id), timeout=22.0
                 )
             except asyncio.TimeoutError:
                 web_ctx, search_debug = "", {

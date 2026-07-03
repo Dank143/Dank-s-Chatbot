@@ -11,10 +11,11 @@ from llm import race_models, get_client
 _log = logging.getLogger(__name__)
 
 _REGEX_INTENTS = [
-    (re.compile(r'\b(youtube|trailer|soundtrack|gameplay|video|music|listen)\b', re.I), "media"),
     (re.compile(r'\b(traceback|pip install|error|exception|npm install|docs|documentation|api reference)\b', re.I), "documentation"),
     (re.compile(r'\b(reddit|best|vs|versus|should i|review|opinions?|recommendations?)\b', re.I), "opinion"),
     (re.compile(r'\b(meaning of|define|definition|synonym|translate|what does .* mean)\b', re.I), "dictionary"),
+    (re.compile(r'\b(who is|what is|when is|where is|when did|how tall is|how old is)\b', re.I), "wiki"),
+    (re.compile(r'\b(how to|latest news|news about|weather in|price of)\b', re.I), "general"),
 ]
 
 async def _rewrite_query(raw: str, context: str = "") -> dict:
@@ -30,7 +31,7 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
         "Also determine the optimal search intent.\n"
         "Output a JSON object with EXACTLY two keys:\n"
         '- "query": the rewritten search query string.\n'
-        '- "intent": one of "wiki" (facts/entities), "media" (youtube/music/video), "documentation" (code/errors), "opinion" (reviews/reddit), "dictionary" (definitions/translations), or "general".'
+        '- "intent": one of "wiki" (facts/entities), "documentation" (code/errors), "opinion" (reviews/reddit), "dictionary" (definitions/translations), or "general".'
     )
     
     if context:
@@ -88,39 +89,12 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
     return {"query": raw, "intent": "general"}
 
 
-async def _embed(texts: list[str], input_type: str) -> "list[list[float]] | None":
-    """Embed texts via Ollama or NIM."""
-    if not texts:
-        return []
+from .embedder import embed_texts as _fastembed_embed
 
-    async def _fetch_embed(provider: str, model: str) -> list[list[float]] | None:
-        try:
-            client = get_client(provider)
-            kwargs = {"model": model, "input": texts}
-            if provider == "nim":
-                kwargs["extra_body"] = {"input_type": input_type, "truncate": "END"}
-            resp = await client.embeddings.create(**kwargs)
-            return [d.embedding for d in resp.data]
-        except Exception as e:
-            _log.warning("%s embedding failed: %s", provider, e)
-            return None
-
-    cfg = load_config()
-    nim_model = cfg.get("embed_model_nim")
-    ollama_model = cfg.get("embed_model_ollama")
-
-    nim_task = asyncio.create_task(_fetch_embed("nim", nim_model)) if nim_model else None
-    ollama_task = asyncio.create_task(_fetch_embed("ollama", ollama_model)) if ollama_model else None
-
-    if not nim_task and not ollama_task:
-        return None
-
-    res = await race_models(
-        ollama_task, nim_task,
-        timeout=5.0, logger=_log, task_name="semantic rerank",
-        primary_name="Ollama", backup_name="NIM"
-    )
-    return res
+async def _embed(texts: list[str], input_type: str = "") -> "list[list[float]] | None":
+    """Embed texts locally via fastembed. `input_type` is unused by BGE/MiniLM
+    models (no query/passage prefix needed) — kept for call-site compatibility."""
+    return await _fastembed_embed(texts)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -146,3 +120,4 @@ async def _rerank(query: str, results: list[dict]) -> bool:
     for r, v in zip(results, pv):
         r["score"] = _cosine(q, v)
     return True
+    

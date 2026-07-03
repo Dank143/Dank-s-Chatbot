@@ -322,7 +322,14 @@ export async function editMessage(btn) {
   const ta = wrapper.querySelector('.edit-textarea');
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
-  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
+  ta.addEventListener('input', () => {
+    const messagesScroll = messagesEl.scrollTop;
+    const scrollY = window.scrollY;
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+    messagesEl.scrollTop = messagesScroll;
+    if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
+  });
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
 

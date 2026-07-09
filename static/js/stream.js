@@ -48,6 +48,8 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
   let finalized = false;
   let streamFinished = false;
   let thinkStartTime = null;
+  let t0 = performance.now();
+  let ttfsMs = null;
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -86,8 +88,8 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
             if (!line.startsWith('data: ')) continue;
             try {
               const evt = JSON.parse(line.slice(6));
-              if (evt.type === 'error') { showMessageError(assistantWrapper, evt.message); finalized = true; }
-              else if (evt.type === 'done') { setHighlight(true); finalizeStreamingMessage(assistantWrapper); finalized = true; }
+              if (evt.type === 'error') { showMessageError(assistantWrapper, evt.message, ttfsMs, performance.now() - t0); finalized = true; }
+              else if (evt.type === 'done') { setHighlight(true); finalizeStreamingMessage(assistantWrapper, ttfsMs, performance.now() - t0); finalized = true; }
             } catch (_) {}
           }
           buf = '';
@@ -117,6 +119,7 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
           const chat = state.chats.find(c => c.id === state.activeChatId);
           if (chat) chat.title = evt.title;
         } else if (evt.type === 'thinking') {
+          if (ttfsMs === null) ttfsMs = performance.now() - t0;
           streamBubble?.querySelector('.search-indicator')?.remove();
           streamBubble?.querySelector('.thinking-indicator')?.remove();
           if (!thinkStartTime) thinkStartTime = performance.now();
@@ -164,7 +167,7 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
           if (block) {
             block.classList.remove('streaming');
             block.classList.remove('expanded'); // Collapse when thinking finishes
-            const secs = evt.duration || Math.round((performance.now() - (thinkStartTime || performance.now())) / 1000);
+            const secs = evt.duration !== undefined ? evt.duration : Math.round((performance.now() - (thinkStartTime || performance.now())) / 1000);
             const label = block.querySelector('.think-label');
             if (label) label.textContent = `Thought for ${secs}s`;
             // Render thinking content as markdown
@@ -172,6 +175,7 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
             if (content) content.innerHTML = renderMarkdown(thinkRaw);
           }
         } else if (evt.type === 'delta') {
+          if (ttfsMs === null) ttfsMs = performance.now() - t0;
           streamBubble?.querySelector('.search-indicator')?.remove();
           streamBubble?.querySelector('.thinking-indicator')?.remove();
           raw += evt.content;
@@ -197,13 +201,15 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
           if (evt.asst_msg_id) assistantWrapper.dataset.msgId = evt.asst_msg_id;
           streamFinished = true;
           setHighlight(true);
-          finalizeStreamingMessage(assistantWrapper);
+          const finalTtfs = evt.ttfs_ms !== undefined ? evt.ttfs_ms : ttfsMs;
+          const finalTotal = evt.total_ms !== undefined ? evt.total_ms : (performance.now() - t0);
+          finalizeStreamingMessage(assistantWrapper, finalTtfs, finalTotal);
           finalized = true;
           if (evt.finish_reason === 'length') showTruncationNotice(assistantWrapper);
           // Keep reading after 'done' — title event may follow.
         } else if (evt.type === 'error') {
           streamFinished = true;
-          showMessageError(assistantWrapper, evt.message);
+          showMessageError(assistantWrapper, evt.message, ttfsMs, performance.now() - t0);
           finished = true;
           finalized = true;
           break;
@@ -229,37 +235,26 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
             const content = block.querySelector('.think-content');
             if (content) content.innerHTML = renderMarkdown(thinkRaw);
           }
-          finalizeStreamingMessage(assistantWrapper);
-          showStoppedNotice(assistantWrapper);
         }
-        else assistantWrapper.remove();
+        finalizeStreamingMessage(assistantWrapper, ttfsMs, performance.now() - t0);
+        showStoppedNotice(assistantWrapper);
       } else if (!rawSoFar.trim()) {
-        showMessageError(assistantWrapper, 'Model returned an empty response. Try again or switch models.');
+        showMessageError(assistantWrapper, 'Model returned an empty response. Try again or switch models.', ttfsMs, performance.now() - t0);
       } else {
-        finalizeStreamingMessage(assistantWrapper);
+        finalizeStreamingMessage(assistantWrapper, ttfsMs, performance.now() - t0);
       }
     }
 
   } catch (err) {
     if (err.name === 'AbortError') {
-      // Only save/finalize if message hadn't already finished.
+      // Only finalize if message hadn't already finished.
       if (!finalized) {
-        if (raw && state.activeChatId) {
-          // Save with thinking content included for persistence
-          const saveContent = thinkRaw ? `<think>${thinkRaw}</think>\n${raw}` : raw;
-          const saved = await api(`/chats/${state.activeChatId}/messages/assistant`, {
-            method: 'POST', body: { content: saveContent },
-          }).catch(() => null);
-          if (saved?.id) assistantWrapper.dataset.msgId = saved.id;
-        } else if (!raw) {
-          assistantWrapper.remove();
-        }
         setHighlight(true);
-        finalizeStreamingMessage(assistantWrapper);
-        if (raw) showStoppedNotice(assistantWrapper);
+        finalizeStreamingMessage(assistantWrapper, ttfsMs, performance.now() - t0);
+        showStoppedNotice(assistantWrapper);
       }
     } else {
-      showMessageError(assistantWrapper, err.message);
+      showMessageError(assistantWrapper, err.message, ttfsMs, performance.now() - t0);
     }
   }
 }

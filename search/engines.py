@@ -13,10 +13,6 @@ _log = logging.getLogger(__name__)
 _DDG_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 _FANDOM_ALLOW = frozenset({"fandom.com"})
 
-# Read once at import (same pattern pipeline.py already uses for _MAX_URLS)
-# so a container/host change is a config edit, not a code edit. This is a
-# startup-time value, not a per-request one, so a plain synchronous
-# load_config() call here is fine — it's not on the hot path.
 _cfg = load_config()
 SEARXNG_URL = _cfg.get("searxng_url", "http://localhost:8888/search")
 
@@ -26,11 +22,7 @@ _tavily_client = httpx.AsyncClient(timeout=10.0, limits=_limits)
 
 
 class _CircuitBreaker:
-    """Trip after N consecutive failures, then short-circuit calls for a
-    cooldown window instead of paying the engine's full timeout on every
-    request during an outage. Shared across all three engines so the same
-    protection SearXNG had isn't a special case — DDG or Tavily going down
-    used to still cost their full per-call timeout on every single search."""
+    """Skip calls for a cooldown window after N consecutive failures."""
 
     def __init__(self, name: str, threshold: int, cooldown: float):
         self.name = name
@@ -64,7 +56,6 @@ async def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
     if _searxng_breaker.is_open():
         return []
     try:
-        # Strict timeout so a cold SearXNG container doesn't hang the UI for 30s.
         resp = await asyncio.wait_for(
             _searxng_client.get(
                 SEARXNG_URL,
@@ -94,20 +85,14 @@ async def _ddg_search(
     query: str, site: str | None = None, max_results: int = 10,
     allowed: "frozenset[str]" = frozenset(), max_attempts: int = 2,
 ) -> list[dict]:
-    """Secondary search using DuckDuckGo library with multi-backend.
-
-    max_attempts trimmed from 3->2 and backoff shortened from 0.5s/1.0s to
-    0.3s/0.6s: the caller (pipeline._staggered_search_cascade) already wraps
-    this whole call in a hard per-phase timeout, so extra local retries just
-    eat into that shared budget rather than meaningfully improving hit rate.
-    """
+    """Secondary search via DuckDuckGo multi-backend."""
     if _ddg_breaker.is_open():
         return []
     search_query = f"site:{site} {query}" if site else query
     last_exc = None
     for attempt in range(max_attempts):
         try:
-            # Instantiate DDGS per request to guarantee a fresh VQD token and avoid cross-thread async loop closures
+            # Fresh DDGS instance per request for clean VQD token
             results = await asyncio.get_running_loop().run_in_executor(
                 _DDG_EXECUTOR,
                 lambda: list(DDGS(timeout=5.0).text(search_query, max_results=max_results, backend="duckduckgo,google,bing,brave,startpage"))
@@ -122,25 +107,19 @@ async def _ddg_search(
                 return mapped
         except Exception as e:
             last_exc = e
-        # Don't sleep after the final attempt — nothing left to wait for.
         if attempt < max_attempts - 1:
             await asyncio.sleep(0.3 * (attempt + 1))
-    # Only count this against the breaker if every attempt actually raised —
-    # a clean response with zero matches is a legitimate "no results", not an
-    # engine failure, and shouldn't be able to trip the circuit.
+    # Only trip breaker on actual exceptions, not zero-result responses
     if last_exc is not None:
         _ddg_breaker.record_failure()
         _log.warning("DDGS multi-backend failed for %r: %s", search_query, last_exc)
     else:
-        # Every attempt returned cleanly with zero matches — a legitimate
-        # "no results", not a failure, so this shouldn't be logged at
-        # warning level or read as an engine outage when grepping logs.
         _ddg_breaker.record_success()
         _log.debug("DDGS multi-backend returned no results for %r", search_query)
     return []
 
 async def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
-    """Tertiary search using Tavily API (basic)."""
+    """Tertiary search via Tavily API."""
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         return []

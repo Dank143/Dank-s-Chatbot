@@ -4,7 +4,7 @@ import { renderMarkdown } from './markdown.js';
 import { DOC_ICON, _docStore, nextDocKey, openDocViewer } from './files.js';
 import { badgeHtml } from './models.js';
 import { streamAssistant, getSearchPanelHtml } from './stream.js';
-import { ICON, assistantActions } from './icons.js';
+import { ICON, getAssistantActions } from './icons.js';
 
 // Extract <think>...</think> from persisted message content.
 function extractThink(content) {
@@ -77,17 +77,6 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
     const modelName = state.modelsNim?.find(m => m.id === msgModel)?.name 
                    || state.modelsOllama?.find(m => m.id === msgModel)?.name 
                    || state.models?.find(m => m.id === msgModel)?.name || '';
-    let thinkBlockHtml = '';
-    if (think && !streaming) {
-      thinkBlockHtml = `
-        <div class="think-block">
-          <div class="think-toggle">
-            <svg class="think-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-            <span class="think-label">Thought process</span>
-          </div>
-          <div class="think-content">${renderMarkdown(think)}</div>
-        </div>`;
-    }
     let searchPanelHtml = '';
     if (msg.search_data) {
       try {
@@ -96,6 +85,33 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
       } catch (e) {
         console.error('Failed to parse search_data', e);
       }
+    }
+
+    let ttfsMs = null;
+    let totalMs = null;
+    let thoughtSecs = null;
+    if (msg.timing_data) {
+      try {
+        const parsed = typeof msg.timing_data === 'string' ? JSON.parse(msg.timing_data) : msg.timing_data;
+        ttfsMs = parsed.ttfs_ms;
+        totalMs = parsed.total_ms;
+        if (parsed.thought_time_ms !== undefined) thoughtSecs = Math.round(parsed.thought_time_ms / 1000);
+      } catch (e) {
+        console.error('Failed to parse timing_data', e);
+      }
+    }
+
+    let thinkBlockHtml = '';
+    if (think && !streaming) {
+      const durationStr = thoughtSecs !== null ? `Thought for ${thoughtSecs}s` : `Thought process`;
+      thinkBlockHtml = `
+        <div class="think-block">
+          <div class="think-toggle">
+            <svg class="think-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="think-label">${durationStr}</span>
+          </div>
+          <div class="think-content">${renderMarkdown(think)}</div>
+        </div>`;
     }
 
     wrapper.innerHTML = `
@@ -110,7 +126,7 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
         </div>
         ${searchPanelHtml}
       </div>
-      ${!streaming ? assistantActions : ''}
+      ${!streaming ? getAssistantActions(ttfsMs, totalMs) : ''}
     `;
     // Attach click handler for think-toggle
     const toggle = wrapper.querySelector('.think-toggle');
@@ -129,12 +145,12 @@ export function updateStreamingMessage(wrapper, raw) {
   if (state.autoScroll) scrollToBottom();
 }
 
-export function finalizeStreamingMessage(wrapper) {
+export function finalizeStreamingMessage(wrapper, ttfsMs = null, totalMs = null) {
   const bubble = wrapper.querySelector('.bubble');
   const raw = bubble.dataset.raw || '';
   if (raw) bubble.innerHTML = renderMarkdown(raw);
   else { bubble.querySelector('.streaming-cursor')?.remove(); bubble.querySelector('.thinking-indicator')?.remove(); }
-  wrapper.insertAdjacentHTML('beforeend', assistantActions);
+  wrapper.insertAdjacentHTML('beforeend', getAssistantActions(ttfsMs, totalMs));
   // Attach click handler to think-toggle if present
   const toggle = wrapper.querySelector('.think-toggle');
   if (toggle && !toggle.dataset.bound) {
@@ -167,10 +183,13 @@ export function showStoppedNotice(wrapper) {
   wrapper.appendChild(notice);
 }
 
-export function showMessageError(wrapper, msg) {
+export function showMessageError(wrapper, msg, ttfsMs = null, totalMs = null) {
   const bubble = wrapper.querySelector('.bubble');
   bubble?.querySelector('.streaming-cursor')?.remove();
   if (bubble) bubble.innerHTML = `<div class="error-bubble">Error: ${escHtml(msg)}</div>`;
+  if (!wrapper.querySelector('.message-actions')) {
+    wrapper.insertAdjacentHTML('beforeend', getAssistantActions(ttfsMs, totalMs));
+  }
 }
 
 export function copyMessage(btn) {
@@ -400,8 +419,13 @@ export async function retryMessage(btn) {
   const model = wrapper.dataset.model || state.selectedModel;
 
   if (!msgId) {
-    await (await import('./chat.js')).openChat(state.activeChatId);
-    return;
+    const row = wrapper.closest('.duo-message-row');
+    if (row) {
+      return retryDuoMessage(row);
+    } else {
+      await (await import('./chat.js')).openChat(state.activeChatId);
+      return;
+    }
   }
 
   // Delete future turns (but keep current turn intact to preserve siblings in duo mode)
@@ -473,15 +497,16 @@ export function injectRetryDuoButton(row) {
   row.insertAdjacentHTML('beforeend', btnHtml);
 }
 
-export async function retryDuoMessage(btn) {
+export async function retryDuoMessage(btnOrRow) {
   if (state.streaming) return;
-  const row = btn.closest('.duo-message-row');
+  const row = btnOrRow.classList?.contains('duo-message-row') ? btnOrRow : btnOrRow.closest('.duo-message-row');
   if (!row) return;
   
   const wrappers = Array.from(row.querySelectorAll('.message-wrapper'));
   if (wrappers.length !== 2) return;
   
-  btn.remove();
+  const duoBtn = row.querySelector('.retry-duo-btn');
+  if (duoBtn) duoBtn.remove();
 
   const nextNode = row.nextElementSibling;
   if (nextNode) {
@@ -498,8 +523,10 @@ export async function retryDuoMessage(btn) {
 
   beginStreaming();
 
+  const validMsgId = wrappers[0].dataset.msgId || wrappers[1].dataset.msgId;
+
   const promises = wrappers.map(wrapper => {
-    const msgId = wrapper.dataset.msgId;
+    const msgId = wrapper.dataset.msgId || validMsgId;
     const model = wrapper.dataset.model;
     const bubble = wrapper.querySelector('.bubble');
     bubble.innerHTML = '<div class="streaming-cursor"></div>';

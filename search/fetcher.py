@@ -22,8 +22,7 @@ async def warmup_jina():
 
 _JINA_BASE = "https://r.jina.ai/"
 _MAX_CHARS = 20000
-_MIN_CHARS = 2000
-# Min snippet length to count as usable fallback context.
+_MIN_CHARS = 500
 _MIN_SNIPPET = 80
 _JINA_TIMEOUT = 5.0
 
@@ -41,24 +40,17 @@ _limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
 _jina_client = httpx.AsyncClient(timeout=_JINA_TIMEOUT, follow_redirects=True, limits=_limits)
 _fetch_client = httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=_BROWSER_HEADERS, limits=_limits)
 
-# MediaWiki APIs need a descriptive UA per Wikimedia API policy.
 _MW_HEADERS = {"User-Agent": "NIMChatbot/1.0 (web-search; contact vibecodersunity@gmail.com)"}
 _mw_client = httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=_MW_HEADERS, limits=_limits)
 
 _SKIP_DOMAINS = {
     "twitter.com", "x.com",
     "instagram.com", "tiktok.com", "facebook.com",
-    "fandom.com",
 }
 
 
-
 class _BoundedLRU(OrderedDict):
-    """dict-like cache capped at `maxsize`, evicting the least-recently-used
-    entry once full. Plain dicts here (unlike cache.py's TTL-based
-    `_cache`) would grow forever over long uptimes as more distinct hosts
-    are seen — this caps memory while still remembering the hosts actually
-    being hit repeatedly."""
+    """LRU cache capped at `maxsize` entries."""
 
     def __init__(self, maxsize: int = 2000):
         super().__init__()
@@ -82,10 +74,8 @@ class _BoundedLRU(OrderedDict):
         return default
 
 
-# MediaWiki article-path prefixes.
 _MW_PAGE_PREFIXES = ("/wiki/", "/w/")
 _MW_API_CANDIDATES = ("/w/api.php", "/api.php")
-# host -> working api.php url (or None); lazily probed. Bounded LRU.
 _mw_endpoint_cache: "_BoundedLRU" = _BoundedLRU(maxsize=2000)
 
 
@@ -107,7 +97,7 @@ def truncate(text: str) -> str:
 
 
 async def _extract(html: str) -> str:
-    """Run trafilatura off-thread; truncate, and drop content under the floor."""
+    """Run trafilatura off-thread; drop content under _MIN_CHARS."""
     if not html or _trafilatura is None:
         return ""
     text = await asyncio.to_thread(
@@ -119,7 +109,6 @@ async def _extract(html: str) -> str:
 
 
 async def _jina_fetch(url: str) -> str:
-    # Jina handles JS/table-heavy wiki pages
     try:
         res = await _jina_client.get(f"{_JINA_BASE}{url}", headers={"Accept": "text/plain"})
         res.raise_for_status()
@@ -145,7 +134,7 @@ async def _trafilatura_fetch(url: str) -> str:
 
 
 async def _detect_mediawiki(host: str) -> "str | None":
-    """Probe a host's api.php candidates concurrently; cache the working endpoint."""
+    """Probe api.php candidates; cache the working endpoint."""
     if host in _mw_endpoint_cache:
         return _mw_endpoint_cache[host]
 
@@ -172,9 +161,6 @@ async def _detect_mediawiki(host: str) -> "str | None":
     return endpoint
 
 
-
-
-
 def _mediawiki_title(path: str) -> "str | None":
     for prefix in _MW_PAGE_PREFIXES:
         if path.startswith(prefix):
@@ -197,6 +183,10 @@ async def _mediawiki_api(api_url: str, title: str, client: httpx.AsyncClient) ->
     return next(iter(pages.values()), {}).get("extract", "")
 
 
+# Subpages where extracts API returns empty (content is in wiki templates)
+_TEMPLATE_HEAVY = {"audio", "quotes", "voicelines", "voice_lines", "trivia", "sounds"}
+
+
 async def _mediawiki_fetch(url: str) -> str:
     try:
         parsed = urlparse(url)
@@ -206,12 +196,13 @@ async def _mediawiki_fetch(url: str) -> str:
         page_title = _mediawiki_title(parsed.path)
         if page_title is None:
             return ""
+        segments = page_title.split("/")
+        if any(seg.lower() in _TEMPLATE_HEAVY for seg in segments):
+            return ""  # Let Jina/trafilatura handle template-heavy pages
         api_url = await _detect_mediawiki(host)
         if api_url is None:
             return ""
         text = await _mediawiki_api(api_url, page_title, _mw_client)
-        # Subpage miss (e.g. "Foo/Bar") — retry against parent titles.
-        segments = page_title.split("/")
         while len(text) < 10 and len(segments) > 1:
             segments = segments[:-1]
             text = await _mediawiki_api(api_url, "/".join(segments), _mw_client)
@@ -221,9 +212,8 @@ async def _mediawiki_fetch(url: str) -> str:
         return ""
 
 
-
 async def _reddit_fetch(url: str) -> str:
-    """Fast JSON API fetch for reddit URLs instead of scraping."""
+    """Fetch reddit via JSON API instead of scraping."""
     try:
         parsed = urlparse(url)
         path = parsed.path
@@ -262,20 +252,16 @@ async def _reddit_fetch(url: str) -> str:
         return ""
 
 
-
-# Fetcher coroutines by label, in default race order.
 _FETCHERS = {
     "mediawiki": _mediawiki_fetch,
     "jina": _jina_fetch,
     "trafilatura": _trafilatura_fetch,
 }
-# host -> last-successful fetcher. Skips the 2 that always fail there.
-# Bounded LRU — see _BoundedLRU above.
-_host_fetcher: "_BoundedLRU" = _BoundedLRU(maxsize=2000)
+_host_fetcher: "_BoundedLRU" = _BoundedLRU(maxsize=2000)  # host -> last-successful fetcher
 
 
 async def _race(url: str, labels: list[str]) -> tuple[str, str]:
-    """Race the given fetchers; return (text, label) of the first non-empty."""
+    """Race fetchers; return (text, label) of first non-empty."""
     async def _labeled(label):
         return label, await _FETCHERS[label](url)
 
@@ -295,11 +281,7 @@ async def _race(url: str, labels: list[str]) -> tuple[str, str]:
 
 
 async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
-    """Fetch page text, preferring the host's known-good fetcher.
-    Races mediawiki/jina/trafilatura (see _FETCHERS), then falls back to
-    the search snippet if none of them produce usable content. (No
-    Playwright — it was removed for overhead reasons; this is intentional,
-    not a missing fallback.)"""
+    """Fetch page text via mediawiki/jina/trafilatura race, with snippet fallback."""
     host = urlparse(url).hostname or ""
     
     if host == "reddit.com" or host.endswith(".reddit.com"):
@@ -309,7 +291,7 @@ async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
 
     known = _host_fetcher.get(host)
 
-    # Fast path: try the host's proven fetcher alone.
+    # Fast path: try host's proven fetcher first
     if known:
         try:
             text = await asyncio.wait_for(_FETCHERS[known](url), timeout=2.5)
@@ -318,8 +300,7 @@ async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
         except (Exception, asyncio.TimeoutError):
             pass
 
-    # Race the remaining fetchers (all of them if no known-good, or the others
-    # if the known one just missed this page).
+    # Race remaining fetchers
     skip_labels = {known} if known else set()
     rest = [l for l in _FETCHERS if l not in skip_labels]
     
@@ -329,8 +310,6 @@ async def fetch_content(url: str, snippet: str = "") -> tuple[str, str]:
             _host_fetcher[host] = label
             return text, label
 
-
-    # Snippet fallback only if it carries real text (>= 80 chars).
     if len(snippet.strip()) >= _MIN_SNIPPET:
         return snippet[:1000], "snippet"
     return "", "failed"

@@ -39,6 +39,7 @@ class SendMessageBody(BaseModel):
 
 class SaveAssistantBody(BaseModel):
     content: str
+    timing_data: str | None = None
 
 
 class RegenerateBody(BaseModel):

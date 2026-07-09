@@ -29,19 +29,19 @@ def _fallback_title(text: str) -> str:
     return text[:60].strip() + ("…" if len(text) > 60 else "")
 
 
-async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str | None", model: "str | None" = None, overwrite: bool = False, duo_side: int = 0, search_data: "str | None" = None) -> None:
+async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str | None", model: "str | None" = None, overwrite: bool = False, duo_side: int = 0, search_data: "str | None" = None, timing_data: "str | None" = None) -> None:
     """Persist an assistant message, bump the chat, and optionally set its title."""
     def _task(conn):
         ts = now_iso()
         if overwrite:
             conn.execute(
-                "UPDATE messages SET content=?, model=?, duo_side=?, search_data=? WHERE id=?",
-                (content, model, duo_side, search_data, msg_id)
+                "UPDATE messages SET content=?, model=?, duo_side=?, search_data=?, timing_data=? WHERE id=?",
+                (content, model, duo_side, search_data, timing_data, msg_id)
             )
         else:
             conn.execute(
-                "INSERT INTO messages (id, chat_id, role, content, created_at, model, duo_side, search_data) VALUES (?,?,?,?,?,?,?,?)",
-                (msg_id, chat_id, "assistant", content, ts, model, duo_side, search_data),
+                "INSERT INTO messages (id, chat_id, role, content, created_at, model, duo_side, search_data, timing_data) VALUES (?,?,?,?,?,?,?,?,?)",
+                (msg_id, chat_id, "assistant", content, ts, model, duo_side, search_data, timing_data),
             )
         conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (ts, chat_id))
         if title:
@@ -164,9 +164,19 @@ async def send_message(chat_id: str, body: SendMessageBody):
                 (user_msg_id, chat_id, "user", body.content, ts, att_json, model),
             )
         conn.execute("UPDATE chats SET model=?, updated_at=? WHERE id=?", (model, ts, chat_id))
+        conn.execute("UPDATE chats SET model=?, updated_at=? WHERE id=?", (model, ts, chat_id))
+        
+        # Calculate a safe SQL limit. A turn is roughly 2 messages. In Duo mode, messages are interleaved, 
+        # so we fetch 4x the max_turns to ensure we have enough history after filtering.
+        max_turns = cfg.get("defaults", {}).get("max_history_turns", 50)
+        sql_limit = max(max_turns * 4, 20)
+        
         history_raw = conn.execute(
-            "SELECT role, content, attachments, duo_side FROM messages WHERE chat_id=? ORDER BY created_at", (chat_id,)
+            f"SELECT role, content, attachments, duo_side FROM messages WHERE chat_id=? ORDER BY created_at DESC LIMIT {sql_limit}", (chat_id,)
         ).fetchall()
+        
+        # Reverse to restore chronological order
+        history_raw = list(reversed(history_raw))
         
         # Filter history to isolate Duo tracks: keep all user messages, and only assistant messages for this track.
         history = [dict(m) for m in history_raw if m["role"] == "user" or m["duo_side"] == body.duo_side]
@@ -180,12 +190,15 @@ async def send_message(chat_id: str, body: SendMessageBody):
                     "attachments": att_json
                 })
                 
-        return model, chat["title"] == "New Chat", history
+        
+        # We run _build_request inside the database thread to prevent heavy Regex 
+        # operations (stripping massive <think> blocks) from blocking the main async event loop!
+        today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model)
+                
+        return model, chat["title"] == "New Chat", history, client, api_messages, max_tokens, temperature, extra_create
 
-    model, needs_title, history = await run_db_task(_setup)
-
-    today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    client, messages, max_tokens, temperature, extra_create = _build_request(history, today, model)
+    model, needs_title, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
 
     # Launch title generation early so it overlaps with web search & streaming.
     title_seed = body.content
@@ -199,84 +212,114 @@ async def send_message(chat_id: str, body: SendMessageBody):
     async def stream_response():
         asst_msg_id = str(uuid.uuid4())
         search_debug_json = None
-        yield f"data: {json.dumps({'type': 'meta', 'user_msg_id': user_msg_id})}\n\n"
-
-        if body.web_search and body.content:
-            # Provide recent turns as context for query rewriting.
-            ctx_turns = list(history)[:-1][-6:]
-            history_context = "\n".join(
-                f"{m['role']}: {m['content'][:200]}"
-                for m in ctx_turns if m["content"]
-            )
-            yield f"data: {json.dumps({'type': 'searching', 'query': body.content})}\n\n"
-            try:
-                web_ctx, search_debug = await asyncio.wait_for(
-                    fetch_web_context(body.content, history_context=history_context, chat_id=chat_id), timeout=22.0
-                )
-            except asyncio.TimeoutError:
-                web_ctx, search_debug = "", {
-                    "site": "general", "original_query": body.content,
-                    "rewritten_query": body.content, "query": body.content,
-                    "fallback": True, "sources": [], "timed_out": True,
-                }
-            inject_web_context(messages, web_ctx)
-            search_payload = {'got_context': bool(web_ctx), **search_debug}
-            search_debug_json = json.dumps(search_payload)
-            yield f"data: {json.dumps({'type': 'search_debug', **search_payload})}\n\n"
-
-        creator_resp = is_asking_about_creator(body.content)
-        if creator_resp:
-            fallback = _fallback_title(body.content) if needs_title and body.content else None
-            await _save_assistant(chat_id, asst_msg_id, creator_resp, fallback, model, False, body.duo_side, search_debug_json)
-            yield f"data: {json.dumps({'type': 'delta', 'content': creator_resp})}\n\n"
-            if fallback:
-                yield f"data: {json.dumps({'type': 'title', 'title': fallback})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': 'stop'})}\n\n"
-            return
-
-        if _DANG_VI_RE.search(body.content):
-            hail = "QUÝ NGÀI ĐĂNG VĨ ĐẠI.\n\n"
-        elif _DANG_EN_RE.search(body.content):
-            hail = "ALL HAIL MISTER DANG!\n\n"
-        else:
-            hail = ""
         result: dict = {}
-        hail_sent = not hail
-        # Retry once if the model returns an empty completion on cold start.
-        for attempt in range(2):
-            result = {}
-            async for evt in llm_stream(client, model, messages, max_tokens, temperature, result, extra_create):
-                if not hail_sent and '"type": "delta"' in evt:
-                    hail_sent = True
-                    yield f"data: {json.dumps({'type': 'delta', 'content': hail})}\n\n"
-                yield evt
-            if "content" not in result:
-                return  # stream errored — error event already sent
-            if result["content"].strip() or attempt == 1:
-                break
-
-        if not result["content"].strip():
-            yield f"data: {json.dumps({'type': 'error', 'message': 'The model returned an empty response. Please try again.'})}\n\n"
-            return
-
-        # Persist answer and emit 'done' before resolving the title.
-        await _save_assistant(chat_id, asst_msg_id, hail + result["content"], None, model, False, body.duo_side, search_debug_json)
-        yield f"data: {json.dumps({'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')})}\n\n"
-
-        if needs_title:
-            if title_task:
+        hail = ""
+        
+        try:
+            yield f"data: {json.dumps({'type': 'meta', 'user_msg_id': user_msg_id})}\n\n"
+    
+            if body.web_search and body.content:
+                # Provide recent turns as context for query rewriting.
+                ctx_turns = list(history)[:-1][-6:]
+                history_context = "\n".join(
+                    f"{m['role']}: {m['content'][:200]}"
+                    for m in ctx_turns if m["content"]
+                )
+                yield f"data: {json.dumps({'type': 'searching', 'query': body.content})}\n\n"
                 try:
-                    generated = await asyncio.wait_for(title_task, timeout=10.0)
-                except Exception:
-                    generated = _fallback_title(title_seed)
-            else:
-                # Image-only turn: no user text to title from — use the reply instead.
-                try:
-                    generated = await asyncio.wait_for(_generate_title(result["content"]), timeout=10.0)
-                except Exception:
-                    generated = _fallback_title(result["content"])
-            await db_execute("UPDATE chats SET title=? WHERE id=?", (generated, chat_id))
-            yield f"data: {json.dumps({'type': 'title', 'title': generated})}\n\n"
+                    web_ctx, search_debug = await asyncio.wait_for(
+                        fetch_web_context(body.content, history_context=history_context, chat_id=chat_id), timeout=22.0
+                    )
+                except asyncio.TimeoutError:
+                    web_ctx, search_debug = "", {
+                        "site": "general", "original_query": body.content,
+                        "rewritten_query": body.content, "query": body.content,
+                        "fallback": True, "sources": [], "timed_out": True,
+                    }
+                inject_web_context(api_messages, web_ctx)
+                search_payload = {'got_context': bool(web_ctx), **search_debug}
+                search_debug_json = json.dumps(search_payload)
+                yield f"data: {json.dumps({'type': 'search_debug', **search_payload})}\n\n"
+    
+            creator_resp = is_asking_about_creator(body.content)
+            if creator_resp:
+                fallback = _fallback_title(body.content) if needs_title and body.content else None
+                await _save_assistant(chat_id, asst_msg_id, creator_resp, fallback, model, False, body.duo_side, search_debug_json)
+                yield f"data: {json.dumps({'type': 'delta', 'content': creator_resp})}\n\n"
+                if fallback:
+                    yield f"data: {json.dumps({'type': 'title', 'title': fallback})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': 'stop'})}\n\n"
+                return
+    
+            if _DANG_VI_RE.search(body.content):
+                hail = "QUÝ NGÀI ĐĂNG VĨ ĐẠI.\n\n"
+            elif _DANG_EN_RE.search(body.content):
+                hail = "ALL HAIL MISTER DANG!\n\n"
+            
+            hail_sent = not hail
+            # Retry once if the model returns an empty completion on cold start.
+            for attempt in range(2):
+                result = {}
+                async for evt in llm_stream(client, model, api_messages, max_tokens, temperature, result, extra_create):
+                    if not hail_sent and '"type": "delta"' in evt:
+                        hail_sent = True
+                        yield f"data: {json.dumps({'type': 'delta', 'content': hail})}\n\n"
+                    yield evt
+                if "content" not in result:
+                    return  # stream errored — error event already sent
+                if result["content"].strip() or attempt == 1:
+                    break
+    
+            if not result["content"].strip():
+                yield f"data: {json.dumps({'type': 'error', 'message': 'The model returned an empty response. Please try again.'})}\n\n"
+                return
+    
+            # Persist answer and emit 'done' before resolving the title.
+            timing_data = None
+            if result.get("ttfs_ms") is not None and result.get("total_ms") is not None:
+                timing_payload = {"ttfs_ms": result["ttfs_ms"], "total_ms": result["total_ms"]}
+                if result.get("thought_time_ms") is not None:
+                    timing_payload["thought_time_ms"] = result["thought_time_ms"]
+                timing_data = json.dumps(timing_payload)
+                
+            await _save_assistant(chat_id, asst_msg_id, hail + result["content"], None, model, False, body.duo_side, search_debug_json, timing_data)
+            
+            done_payload = {'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')}
+            if timing_data:
+                done_payload.update(json.loads(timing_data))
+            yield f"data: {json.dumps(done_payload)}\n\n"
+    
+            if needs_title:
+                if title_task:
+                    try:
+                        generated = await asyncio.wait_for(title_task, timeout=10.0)
+                    except Exception:
+                        generated = _fallback_title(title_seed)
+                else:
+                    # Image-only turn: no user text to title from — use the reply instead.
+                    try:
+                        generated = await asyncio.wait_for(_generate_title(result["content"]), timeout=10.0)
+                    except Exception:
+                        generated = _fallback_title(result["content"])
+                await db_execute("UPDATE chats SET title=? WHERE id=?", (generated, chat_id))
+                yield f"data: {json.dumps({'type': 'title', 'title': generated})}\n\n"
+
+        except asyncio.CancelledError:
+            content = result.get("content", "").strip() if result else ""
+            if not content:
+                content = "_[Generation Stopped by User]_"
+                
+            timing_data = None
+            if result and result.get("ttfs_ms") is not None and result.get("total_ms") is not None:
+                timing_payload = {"ttfs_ms": result["ttfs_ms"], "total_ms": result["total_ms"]}
+                if result.get("thought_time_ms") is not None:
+                    timing_payload["thought_time_ms"] = result["thought_time_ms"]
+                timing_data = json.dumps(timing_payload)
+                
+            asyncio.create_task(_save_assistant(
+                chat_id, asst_msg_id, hail + content, None, model, False, body.duo_side, search_debug_json, timing_data
+            ))
+            raise
 
     return StreamingResponse(stream_response(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
@@ -298,6 +341,7 @@ async def delete_messages_from(chat_id: str, message_id: str):
 
 @router.post("/{chat_id}/messages/assistant", status_code=201)
 async def save_assistant_message(chat_id: str, body: SaveAssistantBody):
+    cfg = load_config()
     if not body.content.strip():
         raise HTTPException(400, "Empty content")
     msg_id = str(uuid.uuid4())
@@ -307,8 +351,8 @@ async def save_assistant_message(chat_id: str, body: SaveAssistantBody):
             raise HTTPException(404, "Chat not found")
         ts = now_iso()
         conn.execute(
-            "INSERT INTO messages (id, chat_id, role, content, created_at, model) VALUES (?,?,?,?,?,?)",
-            (msg_id, chat_id, "assistant", body.content, ts, cfg.get("default_model", "")),
+            "INSERT INTO messages (id, chat_id, role, content, created_at, model, timing_data) VALUES (?,?,?,?,?,?,?)",
+            (msg_id, chat_id, "assistant", body.content, ts, cfg.get("default_model", ""), body.timing_data),
         )
         conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (ts, chat_id))
     await run_db_task(_task)
@@ -319,36 +363,39 @@ async def save_assistant_message(chat_id: str, body: SaveAssistantBody):
 async def regenerate_response(chat_id: str, body: RegenerateBody):
     cfg = load_config()
 
-    def _read(conn):
+    def _setup(conn):
         chat = conn.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
         if not chat:
             raise HTTPException(404, "Chat not found")
         chat = dict(chat)
         model: str = str(body.model or chat["model"] or cfg.get("default_model") or "")
-        history_query = "SELECT role, content, attachments, duo_side FROM messages WHERE chat_id=?"
+        
+        max_turns = cfg.get("defaults", {}).get("max_history_turns", 50)
+        sql_limit = max(max_turns * 4, 20)
+        history_query = f"SELECT role, content, attachments, duo_side FROM messages WHERE chat_id=?"
         params = [chat_id]
         if body.overwrite_message_id:
-            # When overwriting, the history is everything before the message being overwritten
             target_msg = conn.execute("SELECT created_at FROM messages WHERE id=?", (body.overwrite_message_id,)).fetchone()
             if target_msg:
                 history_query += " AND created_at < ?"
                 params.append(target_msg["created_at"])
         
-        history_query += " ORDER BY created_at"
+        history_query += f" ORDER BY created_at DESC LIMIT {sql_limit}"
         history_raw = conn.execute(history_query, tuple(params)).fetchall()
+        history_raw = list(reversed(history_raw))
+        history = [dict(m) for m in history_raw if m["role"] == "user" or m["duo_side"] == body.duo_side]
         
-        # Filter history to isolate Duo tracks: keep all user messages, and only assistant messages for this track.
-        history = [m for m in history_raw if m["role"] == "user" or m["duo_side"] == body.duo_side]
-        
-        return model, history
+        if not history:
+            return model, [], None, None, None, None, None
 
-    model, history = await run_db_task(_read)
+        today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model)
+        return model, history, client, api_messages, max_tokens, temperature, extra_create
+
+    model, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
 
     if not history:
         raise HTTPException(400, "No messages to regenerate from")
-
-    today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    client, messages_list, max_tokens, temperature, extra_create = _build_request(history, today, model)
 
     # The message being regenerated is the last user turn; use it as the search query.
     last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
@@ -356,42 +403,73 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
     async def stream_response():
         asst_msg_id = body.overwrite_message_id or str(uuid.uuid4())
         search_debug_json = None
-
-        if body.web_search and last_user:
-            ctx_turns = [m for m in history if m["content"]][:-1][-6:]
-            history_context = "\n".join(
-                f"{m['role']}: {m['content'][:200]}" for m in ctx_turns
-            )
-            yield f"data: {json.dumps({'type': 'searching', 'query': last_user})}\n\n"
-            try:
-                web_ctx, search_debug = await asyncio.wait_for(
-                    fetch_web_context(last_user, history_context=history_context, chat_id=chat_id), timeout=22.0
-                )
-            except asyncio.TimeoutError:
-                web_ctx, search_debug = "", {
-                    "site": "general", "original_query": last_user,
-                    "rewritten_query": last_user, "query": last_user,
-                    "fallback": True, "sources": [], "timed_out": True,
-                }
-            inject_web_context(messages_list, web_ctx)
-            search_payload = {'got_context': bool(web_ctx), **search_debug}
-            search_debug_json = json.dumps(search_payload)
-            yield f"data: {json.dumps({'type': 'search_debug', **search_payload})}\n\n"
-
         result: dict = {}
-        for attempt in range(2):
-            result = {}
-            async for evt in llm_stream(client, model, messages_list, max_tokens, temperature, result, extra_create):
-                yield evt
-            if "content" not in result:
-                return  # stream errored — error event already sent
-            if result["content"].strip() or attempt == 1:
-                break
 
-        if not result["content"].strip():
-            yield f"data: {json.dumps({'type': 'error', 'message': 'The model returned an empty response. Please try again.'})}\n\n"
-            return
-        await _save_assistant(chat_id, asst_msg_id, result["content"], None, model, overwrite=bool(body.overwrite_message_id), duo_side=body.duo_side, search_data=search_debug_json)
-        yield f"data: {json.dumps({'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')})}\n\n"
+        try:
+            if body.web_search and last_user:
+                ctx_turns = [m for m in history if m["content"]][:-1][-6:]
+                history_context = "\n".join(
+                    f"{m['role']}: {m['content'][:200]}" for m in ctx_turns
+                )
+                yield f"data: {json.dumps({'type': 'searching', 'query': last_user})}\n\n"
+                try:
+                    web_ctx, search_debug = await asyncio.wait_for(
+                        fetch_web_context(last_user, history_context=history_context, chat_id=chat_id), timeout=22.0
+                    )
+                except asyncio.TimeoutError:
+                    web_ctx, search_debug = "", {
+                        "site": "general", "original_query": last_user,
+                        "rewritten_query": last_user, "query": last_user,
+                        "fallback": True, "sources": [], "timed_out": True,
+                    }
+                inject_web_context(api_messages, web_ctx)
+                search_payload = {'got_context': bool(web_ctx), **search_debug}
+                search_debug_json = json.dumps(search_payload)
+                yield f"data: {json.dumps({'type': 'search_debug', **search_payload})}\n\n"
+    
+            for attempt in range(2):
+                result = {}
+                async for evt in llm_stream(client, model, api_messages, max_tokens, temperature, result, extra_create):
+                    yield evt
+                if "content" not in result:
+                    return  # stream errored — error event already sent
+                if result["content"].strip() or attempt == 1:
+                    break
+    
+            if not result["content"].strip():
+                yield f"data: {json.dumps({'type': 'error', 'message': 'The model returned an empty response. Please try again.'})}\n\n"
+                return
+            timing_data = None
+            if result.get("ttfs_ms") is not None and result.get("total_ms") is not None:
+                timing_payload = {"ttfs_ms": result["ttfs_ms"], "total_ms": result["total_ms"]}
+                if result.get("thought_time_ms") is not None:
+                    timing_payload["thought_time_ms"] = result["thought_time_ms"]
+                timing_data = json.dumps(timing_payload)
+                
+            await _save_assistant(chat_id, asst_msg_id, result["content"], None, model, overwrite=bool(body.overwrite_message_id), duo_side=body.duo_side, search_data=search_debug_json, timing_data=timing_data)
+            
+            done_payload = {'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')}
+            if timing_data:
+                done_payload.update(json.loads(timing_data))
+            
+            yield f"data: {json.dumps(done_payload)}\n\n"
+
+        except asyncio.CancelledError:
+            content = result.get("content", "").strip() if result else ""
+            if not content:
+                content = "_[Generation Stopped by User]_"
+            
+            timing_data = None
+            if result and result.get("ttfs_ms") is not None and result.get("total_ms") is not None:
+                timing_payload = {"ttfs_ms": result["ttfs_ms"], "total_ms": result["total_ms"]}
+                if result.get("thought_time_ms") is not None:
+                    timing_payload["thought_time_ms"] = result["thought_time_ms"]
+                timing_data = json.dumps(timing_payload)
+                
+            asyncio.create_task(_save_assistant(
+                chat_id, asst_msg_id, content, None, model, 
+                bool(body.overwrite_message_id), body.duo_side, search_debug_json, timing_data
+            ))
+            raise
 
     return StreamingResponse(stream_response(), media_type="text/event-stream", headers=_SSE_HEADERS)

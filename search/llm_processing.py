@@ -22,33 +22,23 @@ _REGEX_INTENTS = [
 async def _rewrite_query(raw: str, context: str = "") -> dict:
     """LLM-rewrite to standalone search query with intent."""
     now = datetime.now()
-    current_month = now.strftime("%B")
-    current_year = now.year
     system_prompt = (
-        f"The current date is {current_month} {current_year}. "
+        f"The current date is {now.strftime('%B')} {now.year}. "
         "Analyze the user's message and generate a standalone web search query. "
         "Sentence case, resolve pronouns, keep proper nouns. 4-10 words. "
         "Do NOT add past years to the query unless explicitly requested. "
         "Also determine the optimal search intent.\n"
         "Output a JSON object with EXACTLY two keys:\n"
-        '- "query": the rewritten search query string.\n'
-        '- "intent": one of "wiki" (facts/entities), "documentation" (code/errors), "opinion" (reviews/reddit), "dictionary" (definitions/translations), or "general".'
+        '"query": the rewritten search query string.\n'
+        '"intent": one of "wiki", "documentation", "opinion", "dictionary", or "general".'
     )
-    
-    if context:
-        user_content = (
-            f"Conversation so far:\n{context}\n\nLatest message: {raw}\nSearch query:"
-        )
-    else:
-        user_content = raw
+    user_content = f"Conversation so far:\n{context}\n\nLatest message: {raw}\nSearch query:" if context else raw
 
     async def _fetch(client, model) -> dict | None:
         try:
             _log.info("Query rewrite started using model %s", model)
             resp = await client.chat.completions.create(
-                model=model,
-                max_tokens=60,
-                temperature=0.0,
+                model=model, max_tokens=60, temperature=0.0,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -73,10 +63,6 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
             _log.warning("Query rewrite inner error for %s: %s", model, e)
             return None
 
-    # Cached + off-thread: this runs on every non-regex-matched query, so a
-    # raw load_config() call here would re-pay any file I/O the loader does
-    # on every single request, synchronously, blocking the event loop for
-    # every other in-flight request too. See cache.get_cached_config.
     cfg = await get_cached_config(load_config)
     nim_model = cfg.get("rewrite_model_nim")
     ollama_model = cfg.get("rewrite_model_ollama")
@@ -85,20 +71,17 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
     ollama_task = asyncio.create_task(_fetch(get_client("ollama"), ollama_model)) if ollama_model else None
 
     res = await race_models(
-        ollama_task, nim_task, 
-        timeout=5.0, logger=_log, task_name="query rewrite",
+        ollama_task, nim_task,
+        timeout=4.0, logger=_log, task_name="query rewrite",
         primary_name="Ollama", backup_name="NIM"
     )
-    if res:
-        return res
-    return {"query": raw, "intent": "general"}
+    return res if res else {"query": raw, "intent": "general"}
 
 
 from .embedder import embed_texts as _fastembed_embed
 
 async def _embed(texts: list[str], input_type: str = "") -> "list[list[float]] | None":
-    """Embed texts locally via fastembed. `input_type` is unused by BGE/MiniLM
-    models (no query/passage prefix needed) — kept for call-site compatibility."""
+    """Embed texts locally via fastembed."""
     return await _fastembed_embed(texts)
 
 
@@ -110,11 +93,12 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 async def _rerank(query: str, results: list[dict]) -> bool:
-    """Attach semantic score; return success."""
+    """Attach semantic score to each result; return True on success."""
     if len(results) < 2:
         return False
     snippets = [
-        ((r.get("snippet") or r.get("title") or r["url"])[:512]) for r in results
+        (f"{r.get('title', '')} {r.get('snippet', '')}".strip() or r["url"])[:512]
+        for r in results
     ]
     qv, pv = await asyncio.gather(
         _embed([query], "query"), _embed(snippets, "passage")

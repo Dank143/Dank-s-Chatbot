@@ -15,8 +15,15 @@ export const ICON = {
 };
 
 // Copy + Retry actions shown under a finished assistant message.
-export const assistantActions = `
+export function getAssistantActions(ttfsMs = null, totalMs = null) {
+  let timingHtml = '';
+  if (ttfsMs !== null && totalMs !== null) {
+    timingHtml = `<span class="gen-timing">TTFS ${(ttfsMs/1000).toFixed(1)}s &middot; Total ${(totalMs/1000).toFixed(1)}s</span>`;
+  }
+  return `
   <div class="message-actions">
     <button class="msg-action-btn" title="Copy" onclick="copyMessage(this)">${ICON.copy}</button>
     <button class="msg-action-btn" title="Retry" onclick="retryMessage(this)">${ICON.retry}</button>
+    ${timingHtml}
   </div>`;
+}

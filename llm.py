@@ -284,124 +284,140 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                 in_think = True
         return "".join(visible), "".join(thinking)
 
-    last_exc = None
-    for attempt in range(2):
-        try:
-            stream = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                stream=True,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                **(extra_create or {}),
-            )
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-                delta = choice.delta
-                # Debug: print what the API actually returned
-                # logger.info("API Delta: %s (extra: %s)", delta, getattr(delta, "model_extra", None))
-                
-                # Ollama/OpenAI reasoning field could be 'reasoning_content' or 'reasoning'.
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                if not reasoning and hasattr(delta, "model_extra") and delta.model_extra:
-                    reasoning = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+    try:
+        last_exc = None
+        for attempt in range(2):
+            try:
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    stream=True,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **(extra_create or {}),
+                )
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+                    delta = choice.delta
                     
-                if reasoning:
+                    reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                    if not reasoning and hasattr(delta, "model_extra") and delta.model_extra:
+                        reasoning = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+                        
+                    if reasoning:
+                        if t_first is None:
+                            t_first = time.monotonic()
+                        if t_think_start is None:
+                            t_think_start = time.monotonic()
+                        think_content.append(reasoning)
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning})}\n\n"
+                    if not delta.content:
+                        continue
                     if t_first is None:
                         t_first = time.monotonic()
-                    if t_think_start is None:
-                        t_think_start = time.monotonic()
-                    think_content.append(reasoning)
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning})}\n\n"
-                if not delta.content:
+                    chunk = _CHANNEL_OPEN_RE.sub(_THINK_OPEN, delta.content).replace("<channel|>", _THINK_CLOSE)
+                    raw_chunks.append(chunk)
+                    visible, thinking = _flush(chunk)
+                    if thinking:
+                        if t_think_start is None:
+                            t_think_start = time.monotonic()
+                        think_content.append(thinking)
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': thinking})}\n\n"
+                    if not visible:
+                        continue
+                    full_content.append(visible)
+                    if think_content and len(full_content) == 1:
+                        think_secs = round(time.monotonic() - t_think_start) if t_think_start else 0
+                        yield f"data: {json.dumps({'type': 'thinking_done', 'duration': think_secs})}\n\n"
+                        result["thought_time_ms"] = think_secs * 1000
+                    yield f"data: {json.dumps({'type': 'delta', 'content': visible})}\n\n"
+                last_exc = None
+                break
+            except Exception as exc:
+                exc_str = str(exc)
+                is_rate_limit = (
+                    "429" in exc_str
+                    or getattr(exc, "status_code", None) == 429
+                    or "ResourceExhausted" in exc_str
+                    or "resource_exhausted" in exc_str.lower()
+                    or "overloaded" in exc_str.lower()
+                    or "503" in exc_str
+                    or getattr(exc, "status_code", None) == 503
+                )
+                if is_rate_limit:
+                    last_exc = exc
+                    break
+                if attempt == 0 and not full_content:
+                    logger.warning("llm_stream early-error retry model=%s: %s", model, exc)
+                    finish_reason = None
+                    in_think = False
+                    tag_buf = ""
+                    t_first = None
+                    t_think_start = None
+                    raw_chunks.clear()
+                    think_content.clear()
+                    await asyncio.sleep(0.6)
                     continue
-                if t_first is None:
-                    t_first = time.monotonic()
-                chunk = _CHANNEL_OPEN_RE.sub(_THINK_OPEN, delta.content).replace("<channel|>", _THINK_CLOSE)
-                raw_chunks.append(chunk)
-                visible, thinking = _flush(chunk)
-                if thinking:
-                    if t_think_start is None:
-                        t_think_start = time.monotonic()
-                    think_content.append(thinking)
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': thinking})}\n\n"
-                if not visible:
-                    continue
-                full_content.append(visible)
-                # Signal end of thinking phase when the first visible delta arrives.
-                if think_content and len(full_content) == 1:
-                    think_secs = round(time.monotonic() - t_think_start) if t_think_start else 0
-                    yield f"data: {json.dumps({'type': 'thinking_done', 'duration': think_secs})}\n\n"
-                yield f"data: {json.dumps({'type': 'delta', 'content': visible})}\n\n"
-            last_exc = None
-            break
-        except Exception as exc:
-            # Don't retry rate-limits (429).
-            is_rate_limit = "429" in str(exc) or getattr(exc, "status_code", None) == 429
-            if is_rate_limit:
                 last_exc = exc
                 break
-            # Retry once if nothing streamed yet (cold-start malformed chunk).
-            if attempt == 0 and not full_content:
-                logger.warning("llm_stream early-error retry model=%s: %s", model, exc)
-                finish_reason = None
-                in_think = False
-                tag_buf = ""
-                t_first = None
-                t_think_start = None
-                raw_chunks.clear()
-                think_content.clear()
-                await asyncio.sleep(0.6)
-                continue
-            last_exc = exc
-            break
 
-    if last_exc is not None:
+        if last_exc is not None:
+            raw_len = sum(len(c) for c in raw_chunks)
+            logger.warning("llm_stream error model=%s finish=%s raw=%d: %s", model, finish_reason, raw_len, last_exc)
+            is_rate_limit = (
+                "429" in str(last_exc)
+                or getattr(last_exc, "status_code", None) == 429
+                or "ResourceExhausted" in str(last_exc)
+                or "resource_exhausted" in str(last_exc).lower()
+                or "overloaded" in str(last_exc).lower()
+                or "503" in str(last_exc)
+                or getattr(last_exc, "status_code", None) == 503
+            )
+            err_msg = "The model is currently overloaded — too many requests. Wait a moment then try again, or switch to another model." if is_rate_limit else str(last_exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
+            return
+
+        # flush any buffered tail after stream ends
+        if not in_think and tag_buf.strip():
+            full_content.append(tag_buf)
+            yield f"data: {json.dumps({'type': 'delta', 'content': tag_buf})}\n\n"
+
+        # If thinking ended but no visible content arrived, send thinking_done now.
+        if think_content and not full_content:
+            think_secs = round(time.monotonic() - t_think_start) if t_think_start else 0
+            yield f"data: {json.dumps({'type': 'thinking_done', 'duration': think_secs})}\n\n"
+            result["thought_time_ms"] = think_secs * 1000
+
+        # Rescue unclosed <think>: replay raw stream if visible output is blank.
+        if in_think and not "".join(full_content).strip():
+            salvaged = "".join(raw_chunks).replace(_THINK_OPEN, "").replace(_THINK_CLOSE, "").strip()
+            if salvaged:
+                logger.warning("llm_rescue unclosed_think model=%s chars=%d", model, len(salvaged))
+                full_content.append(salvaged)
+                yield f"data: {json.dumps({'type': 'delta', 'content': salvaged})}\n\n"
+
+    finally:
+        visible = "".join(full_content)
+        think_text = "".join(think_content)
         raw_len = sum(len(c) for c in raw_chunks)
-        logger.warning("llm_stream error model=%s finish=%s raw=%d: %s", model, finish_reason, raw_len, last_exc)
-        is_rate_limit = "429" in str(last_exc) or getattr(last_exc, "status_code", None) == 429
-        err_msg = "Rate limited by the provider — too many requests. Wait a moment then try again, or switch models." if is_rate_limit else str(last_exc)
-        yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
-        return
+        now = time.monotonic()
+        ttft = (t_first - t_start) if t_first else (now - t_start)
+        gen = (now - t_first) if t_first else 0.0
+        
+        log = logger.warning if (not visible.strip() and finish_reason not in ("stop", None)) else logger.info
+        log(
+            "llm_done model=%s finish=%s raw_chars=%d visible_chars=%d think_chars=%d unclosed_think=%s "
+            "ttft=%.2fs gen=%.2fs total=%.2fs",
+            model, finish_reason, raw_len, len(visible), len(think_text), in_think,
+            ttft, gen, now - t_start,
+        )
 
-    # flush any buffered tail after stream ends
-    if not in_think and tag_buf.strip():
-        full_content.append(tag_buf)
-        yield f"data: {json.dumps({'type': 'delta', 'content': tag_buf})}\n\n"
-
-    # If thinking ended but no visible content arrived, send thinking_done now.
-    if think_content and not full_content:
-        think_secs = round(time.monotonic() - t_think_start) if t_think_start else 0
-        yield f"data: {json.dumps({'type': 'thinking_done', 'duration': think_secs})}\n\n"
-
-    # Rescue unclosed <think>: replay raw stream if visible output is blank.
-    if in_think and not "".join(full_content).strip():
-        salvaged = "".join(raw_chunks).replace(_THINK_OPEN, "").replace(_THINK_CLOSE, "").strip()
-        if salvaged:
-            logger.warning("llm_rescue unclosed_think model=%s chars=%d", model, len(salvaged))
-            full_content.append(salvaged)
-            yield f"data: {json.dumps({'type': 'delta', 'content': salvaged})}\n\n"
-
-    visible = "".join(full_content)
-    think_text = "".join(think_content)
-    raw_len = sum(len(c) for c in raw_chunks)
-    now = time.monotonic()
-    ttft = (t_first - t_start) if t_first else (now - t_start)
-    gen = (now - t_first) if t_first else 0.0
-    # Diagnostic log: finish=length→token cap, raw>0 visible=0→think-eaten.
-    log = logger.warning if (not visible.strip() or finish_reason not in ("stop", None)) else logger.info
-    log(
-        "llm_done model=%s finish=%s raw_chars=%d visible_chars=%d think_chars=%d unclosed_think=%s "
-        "ttft=%.2fs gen=%.2fs total=%.2fs",
-        model, finish_reason, raw_len, len(visible), len(think_text), in_think,
-        ttft, gen, now - t_start,
-    )
-
-    # Persist thinking wrapped in <think> tags so the frontend can re-render it on reload.
-    saved = (f"{_THINK_OPEN}{think_text}{_THINK_CLOSE}\n" if think_text else "") + visible
-    result["content"] = saved
-    result["finish_reason"] = finish_reason
+        saved = (f"{_THINK_OPEN}{think_text}{_THINK_CLOSE}\n" if think_text else "") + visible
+        result["content"] = saved
+        result["finish_reason"] = finish_reason
+        result["ttfs_ms"] = round(ttft * 1000)
+        result["total_ms"] = round((now - t_start) * 1000)

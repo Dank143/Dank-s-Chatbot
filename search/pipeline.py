@@ -11,6 +11,7 @@ from .cache import _cache_get, _cache_set, _NEGATIVE_CACHE_TTL
 from .engines import _searxng_search, _ddg_search, _tavily_search, _FANDOM_ALLOW, shutdown_engines, SEARXNG_URL
 from .llm_processing import _rewrite_query, _rerank, _REGEX_INTENTS
 from .embedder import warmup_embedder
+from . import domain_trust
 _log = logging.getLogger(__name__)
 _cfg = load_config()
 
@@ -21,7 +22,7 @@ _warmup_done = asyncio.Event()
 
 
 async def warmup() -> None:
-    """Prime DDG/SearXNG, the browser, and the local embedder concurrently."""
+    """Prime SearXNG, the browser, the local embedder, and the traffic-rank list concurrently."""
     global _warmup_started
     _warmup_started = True
 
@@ -38,6 +39,7 @@ async def warmup() -> None:
         _warmup_searxng(),
         warmup_embedder(),
         warmup_jina(),
+        domain_trust.ensure_loaded(),
         return_exceptions=True,
     )
     _warmup_done.set()
@@ -48,7 +50,7 @@ async def shutdown() -> None:
 
 
 async def _await_warmup() -> None:
-    """Wait for boot warmup to finish so the first search hits a warm session."""
+    """Block until boot warmup finishes (max 6s)."""
     if _warmup_started and not _warmup_done.is_set():
         try:
             await asyncio.wait_for(_warmup_done.wait(), timeout=6.0)
@@ -57,24 +59,18 @@ async def _await_warmup() -> None:
 
 
 def _clean(results: list[dict]) -> list[dict]:
-    """Drop skip-listed domains (youtube/social/etc, fandom.com exempted) before
-    they can win a race or waste a fetch slot. DDG already filters internally;
-    this closes the same gap for SearXNG/Tavily, which don't."""
-    return [r for r in results if r.get("url") and not skip(r["url"], _FANDOM_ALLOW)]
+    """Drop skip-listed domains before they win a race or waste a fetch slot."""
+    return [
+        r for r in results
+        if r.get("url") and not skip(r["url"], _FANDOM_ALLOW)
+    ]
 
 
 async def _staggered_search_cascade(
     searxng_q: str, search_query: str, site: str | None, max_results: int,
     is_fallback: bool = False, deadline: "float | None" = None,
 ) -> tuple[list[dict], str]:
-    """
-    Run SearXNG -> DDG -> Tavily in a staggered race.
-    Budget is halved if is_fallback=True, and every phase timeout is further
-    clamped against `deadline` (an absolute time.monotonic() value) so a slow
-    primary cascade can't starve a fallback cascade — or the fetch stage that
-    runs after this — of the overall request's time budget.
-    Returns (results, engine_used).
-    """
+    """SearXNG -> DDG -> Tavily staggered race. Returns (results, engine_used)."""
     def _cap(t: float) -> float:
         if deadline is None:
             return t
@@ -95,13 +91,13 @@ async def _staggered_search_cascade(
     ddg_task = None
     tavily_task = None
     
-    # Phase 1: wait up to t1 for SearXNG
+    # Phase 1: wait for SearXNG
     done, pending = await asyncio.wait([searxng_task], timeout=t1)
     if searxng_task in done:
         res = _clean(searxng_task.result())
         if res: return res, "SearXNG"
     
-    # Phase 2: SearXNG didn't return, launch DDG
+    # Phase 2: launch DDG
     t_ddg = _cap(3.0 if is_fallback else 6.0)
     ddg_task = asyncio.ensure_future(_ddg_with_timeout(t_ddg))
     pending = [t for t in (searxng_task, ddg_task) if not t.done()]
@@ -115,14 +111,10 @@ async def _staggered_search_cascade(
                 for p in pending: p.cancel()
                 return res, "SearXNG" if task == searxng_task else "DuckDuckGo"
             
-    # Phase 3: Still nothing, launch Tavily
+    # Phase 3: launch Tavily
     tavily_task = asyncio.ensure_future(_tavily_search(searxng_q, max_results=max_results))
     pending = [t for t in (searxng_task, ddg_task, tavily_task) if t and not t.done()]
     
-    # Explicit ceiling on this phase — previously unbounded here, relying only
-    # on each engine's own internal client timeout (Tavily's httpx client is
-    # 10s) as a backstop. Now it's capped against the shared request deadline
-    # too, so a hung engine can't silently eat the whole remaining budget.
     while pending:
         phase3_timeout = _cap(4.0)
         if phase3_timeout <= 0.05:
@@ -148,10 +140,7 @@ def _make_cache_key(query: str, history_context: str, num_urls: int, chat_id: st
     return (query.lower().strip(), ctx_hash, num_urls, chat_id)
 
 
-# In-flight pipeline runs, keyed the same as the cache. Lets concurrent
-# identical requests (e.g. several chat turns landing on the same query
-# before the first one finishes and caches) share a single rewrite -> search
-# -> fetch run instead of each independently paying the full cost.
+# Coalesce concurrent identical requests onto a single in-flight run
 _inflight: "dict[tuple, asyncio.Future]" = {}
 
 
@@ -170,21 +159,9 @@ async def _run_with_hard_timeout(
             "query": query, "fallback": True,
             "engine": "", "sources": [], "timed_out": True
         })
-        # Short negative-cache: a query that reliably blows the 20s ceiling
-        # (e.g. a downstream outage) would otherwise re-run the full pipeline
-        # — rewrite, cascade, fetch — on every single retry.
         _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
         return result
     except Exception:
-        # Every individual engine/fetch call already catches its own
-        # exceptions internally and degrades to []/"" — but nothing
-        # previously guarded the ~400-line orchestration body itself. An
-        # unexpected exception on an untested code path (e.g. a malformed
-        # API response) would otherwise propagate straight up into whatever
-        # calls fetch_web_context() (a Discord message handler, etc.),
-        # crashing or hanging the caller over a single bad query instead of
-        # degrading gracefully like every other failure mode in this
-        # pipeline does.
         _log.exception("fetch_web_context unexpected error for %r", query)
         result = ("", {
             "site": "general", "intent": "general",
@@ -199,13 +176,7 @@ async def _run_with_hard_timeout(
 async def fetch_web_context(
     query: str, num_urls: int = _MAX_URLS, history_context: str = "", chat_id: str = ""
 ) -> tuple[str, dict]:
-    """Rewrite, route, and fetch web context with a hard ceiling.
-
-    Concurrent calls with identical (query, history_context, num_urls,
-    chat_id) are coalesced onto a single in-flight run via `_inflight`, so a
-    burst of requests hitting the same not-yet-cached query only pays the
-    full rewrite -> search -> fetch cost once.
-    """
+    """Rewrite, route, and fetch web context. Coalesces identical concurrent requests."""
     cache_key = _make_cache_key(query, history_context, num_urls, chat_id)
 
     cached = _cache_get(cache_key)
@@ -214,8 +185,6 @@ async def fetch_web_context(
 
     existing = _inflight.get(cache_key)
     if existing is not None and not existing.done():
-        # Shielded: if *this* caller's own await gets cancelled, that must
-        # not cancel the shared run other callers are also waiting on.
         return await asyncio.shield(existing)
 
     fut: "asyncio.Future" = asyncio.get_event_loop().create_future()
@@ -237,15 +206,9 @@ async def fetch_web_context(
 async def _fetch_web_context_inner(
     query: str, num_urls: int = _MAX_URLS, history_context: str = "", chat_id: str = ""
 ) -> tuple[str, dict]:
-    """Rewrite, route, and fetch web context."""
+    """Core pipeline: rewrite -> search -> rerank -> fetch -> assemble."""
     t_start = time.monotonic()
-
-    # Soft deadline, ~3s under the outer 20s hard ceiling. Every downstream
-    # phase (search cascade, fallback cascade, rerank, fetch loop) clamps its
-    # own timeout against this so a slow early stage leaves the later stages
-    # a shrinking-but-nonzero budget, instead of each stage assuming it owns
-    # a fresh full-size window and collectively overrunning the hard timeout.
-    deadline = t_start + 17.0
+    deadline = t_start + 17.0  # Soft deadline, ~3s under the 20s hard ceiling
 
     cache_key = _make_cache_key(query, history_context, num_urls, chat_id)
     cached = _cache_get(cache_key)
@@ -274,7 +237,11 @@ async def _fetch_web_context_inner(
 
     t_rewrite = int((time.monotonic() - t_rewrite_start) * 1000)
 
-    year = "" if re.search(r"\b(19|20)\d{2}\b", rewritten) else str(datetime.now().year)
+    # Skip year for wiki intent — factual queries are timeless
+    if intent == "wiki" or re.search(r"\b(19|20)\d{2}\b", rewritten):
+        year = ""
+    else:
+        year = str(datetime.now().year)
 
     site = None
     suffix = ""
@@ -303,11 +270,7 @@ async def _fetch_web_context_inner(
     
     t_search_start = time.monotonic()
     
-    # Request more raw candidates than num_urls needs — the relevance gate,
-    # semantic score filter, and degradation tiers downstream all thin this
-    # pool out, so a target of e.g. num_urls=10 needs a wider candidate pool
-    # behind it than the old fixed 10/12, or there's nothing left to backfill
-    # from once low-relevance candidates get filtered out.
+    # Over-request to compensate for downstream filtering
     primary_pool = max(10, num_urls + 5)
     fallback_pool = max(12, num_urls + 7)
 
@@ -319,12 +282,7 @@ async def _fetch_web_context_inner(
     results = seed + [r for r in found if r["url"] not in seen]
     used_fallback = False
 
-    # Only do a general fallback search when site-scoped results are thin —
-    # and only if there's meaningfully more than a sliver of budget left.
-    # Launching a fresh cascade with <1s of remaining deadline is wasted
-    # overhead: it's virtually guaranteed to be truncated to nothing before
-    # any engine can respond, so skip it and let existing results (or the
-    # degradation tiers below) handle it instead.
+    # General fallback when site-scoped results are thin (only if budget remains)
     if len(results) < max(2, num_urls // 2) and (deadline - time.monotonic()) > 1.0:
         used_fallback = True
         seen = {r["url"] for r in results}
@@ -356,25 +314,28 @@ async def _fetch_web_context_inner(
         _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
         return result
 
-    # Lead token anchors ranking to the entity so a site-scoped search can't drift.
+    # --- Entity anchor extraction ---
     _noise_words = {
         "wiki", "the", "and", "for", "with", "from", "site", "of", "in", "on", "at", "to",
         "list", "what", "who", "when", "where", "why", "how", "show", "give", "tell", "all",
         "about", "best", "top", "is", "are", "was", "were"
     }
     _words_raw = search_query.split()
-    # The rewrite prompt keeps the query sentence-case but preserves proper
-    # noun capitalization ("Sentence case, resolve pronouns, keep proper
-    # nouns"). A capitalized, non-leading token is therefore a much stronger
-    # signal for "the entity this query is about" than simply the longest
-    # remaining word, which can just as easily land on an unrelated long
-    # common word (e.g. "documentation") instead of the actual subject.
-    _capitalized = [
-        w for i, w in enumerate(_words_raw)
-        if i > 0 and w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1
-    ]
-    if _capitalized:
-        _anchor = max(_capitalized, key=len).lower()
+    # Multi-word anchor from consecutive capitalized spans
+    _cap_spans: list[str] = []
+    _current_span: list[str] = []
+    for i, w in enumerate(_words_raw):
+        if i > 0 and w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
+            _current_span.append(w.lower())
+        else:
+            if _current_span:
+                _cap_spans.append(" ".join(_current_span))
+                _current_span = []
+    if _current_span:
+        _cap_spans.append(" ".join(_current_span))
+
+    if _cap_spans:
+        _anchor = max(_cap_spans, key=len)
     else:
         _candidates = [
             w.lower() for w in _words_raw
@@ -382,58 +343,60 @@ async def _fetch_web_context_inner(
         ]
         _anchor = max(_candidates, key=len, default="")
 
-    # On entity-wiki path, drop results that don't mention the entity at all.
+    # Fuzzy anchor set: full anchor + individual words for abbreviation matching
+    _anchor_words = set(_anchor.split()) if _anchor else set()
+    _anchor_words.discard("")
+
+    def _anchor_match(text: str) -> bool:
+        """Check if anchor (or any constituent word) appears in text."""
+        tl = text.lower()
+        if _anchor in tl:
+            return True
+        return any(w in tl for w in _anchor_words) if _anchor_words else False
+
+    # Entity filter: drop results that don't mention the entity at all
     if wiki_entity and _anchor and len(_anchor) > 2:
         on_entity = [
             r for r in results
-            if _anchor in r["url"].lower() or _anchor in (r.get("snippet") or "").lower()
+            if _anchor_match(r["url"]) or _anchor_match(r.get("snippet") or "")
         ]
         if on_entity:
             debug["entity_dropped"] = len(results) - len(on_entity)
             results = on_entity
-        # Filter seeds strictly by anchor-in-URL.
-        seed = [r for r in seed if _anchor in r["url"].lower()]
+        seed = [r for r in seed if _anchor_match(r["url"])]
 
     def _is_junk(url: str) -> bool:
         u = url.lower()
         return any(ns in u for ns in
                    ("category:", "talk:", "file:", "special:", "user:", "/category"))
 
-    def _priority(r: dict) -> int:
+    def _priority(r: dict) -> tuple:
         url = r["url"].lower()
-        # Demote wiki meta/user/namespace pages — noisy vs the main article.
         if _is_junk(url):
-            return 3
-        # Demote pages whose path doesn't mention the entity (off-topic drift).
-        if _anchor and _anchor not in url:
-            return 2
-        if "wiki" in url or ".org" in url:
-            return 0
-        return 1
+            return (3, 0.0)
+        if _anchor and not _anchor_match(url):
+            return (2, 0.0)
+        base = 0 if ("wiki" in url or ".org" in url) else 1
+        # Within a tier, prefer high-trust domains and demote content farms.
+        return (base, -domain_trust.trust_multiplier(r["url"], _terms_set))
 
-    # Relevance gate: relaxed threshold, or semantic override.
+    # --- Relevance gate ---
     _noise = {"wiki", "documentation", "reddit", "guide"}
     _terms = [
         w.lower() for w in search_query.split()
         if len(w) > 3 and not w.isdigit() and w.lower() not in _noise
     ]
+    _terms_set = set(_terms)
     _threshold = max(1, len(_terms) // 3)
 
     def _relevant(content: str, score: float = 0.0) -> bool:
-        # Two independent gates; either is sufficient on its own:
-        #  1. A high semantic score (>0.6) is trusted outright, bypassing the
-        #     lexical checks below — a paraphrased or translated page can be
-        #     highly relevant while sharing few exact terms with the query,
-        #     so we don't want lexical matching to veto a strong embedding.
-        #  2. Below that confidence, fall back to requiring the anchor entity
-        #     plus a fraction of the query's other terms to literally appear.
+        # High semantic score bypasses lexical check
         if score > 0.6:
             return True
         if not _terms:
             return True
         cl = content.lower()
-        # Require the anchor entity itself to avoid generic franchise term matches.
-        if _anchor and _anchor not in cl:
+        if _anchor and not _anchor_match(cl):
             return False
         return sum(t in cl for t in _terms) >= _threshold
 
@@ -442,10 +405,7 @@ async def _fetch_web_context_inner(
         return "youtube.com/watch" in u or "youtu.be/" in u
 
     async def _fetch_one(r: dict) -> tuple[dict, str, str]:
-        # YouTube watch pages are JS-rendered and not worth scraping or
-        # routing through Jina — title + description from the search result
-        # is what we'd realistically end up extracting anyway, so use that
-        # directly instead of spending a fetch race on it.
+        # YouTube: use snippet directly instead of scraping JS-rendered page
         if _is_youtube_watch(r["url"]):
             title = (r.get("title") or "").strip()
             snip = (r.get("snippet") or "").strip()
@@ -467,35 +427,33 @@ async def _fetch_web_context_inner(
     parts: list[str] = []
     fetched: list[tuple[dict, str, bool]] = []
 
-    # Semantic Reranking and Fetching
+    # --- Semantic reranking ---
     t_rerank_start = time.monotonic()
     
-    # 1. Semantic rerank (normally ~10-50ms locally, but the embedder's
-    # concurrency semaphore can queue up under load from simultaneous chat
-    # requests). Time-box it against the shared deadline so a backed-up
-    # embedder degrades to the heuristic sort instead of silently eating the
-    # fetch stage's budget — reranking is a quality nicety, not something
-    # worth trading fetch time for.
-    rerank_timeout = max(0.2, min(2.0, deadline - time.monotonic()))
+    rerank_timeout = max(0.5, min(2.5, deadline - time.monotonic()))
+    debug["rerank_budget_ms"] = int(rerank_timeout * 1000)
     try:
         reranked_ok = await asyncio.wait_for(_rerank(rewritten, results), timeout=rerank_timeout)
+        if not reranked_ok:
+            _log.debug("Semantic rerank returned False (embedder unavailable); using heuristic sort")
     except asyncio.TimeoutError:
         reranked_ok = False
-        _log.debug("Semantic rerank timed out after %.2fs; using heuristic sort", rerank_timeout)
+        _log.warning("Semantic rerank timed out after %.2fs budget; using heuristic sort", rerank_timeout)
 
-    # Fetch a wider pool than num_urls so there's material left to backfill
-    # from if the strict relevance gate rejects some of the top hits.
-    _fetch_pool_size = num_urls + 3
+    _fetch_pool_size = num_urls + 3  # Wider pool for backfill headroom
 
     if reranked_ok:
         debug["rerank"] = "embed"
-        _high_confidence = [r for r in results if r.get("score", 0.0) >= 0.4]
-        results = _high_confidence
-        # else: keep the full (score-sorted) set — filtering down to fewer
-        # than _fetch_pool_size candidates here would strand the degradation
-        # tiers below with nothing left to backfill from, even though lower-
-        # scored candidates that could still pass a relaxed tier exist.
-        results.sort(key=lambda r: (_is_junk(r["url"]), -r.get("score", 0.0)))
+        # Fold domain trust into semantic score to prioritize authoritative sources over SEO farms.
+        for r in results:
+            r["score"] = r.get("score", 0.0) * domain_trust.trust_multiplier(r["url"], _terms_set)
+        _high_confidence = [r for r in results if r.get("score", 0.0) >= 0.5]
+        _low_confidence  = [r for r in results if r.get("score", 0.0) <  0.5]
+        # Keep low-scoring results as a fallback tail so the fetch pool stays
+        # populated even when DDG / Tavily results all score below the threshold.
+        _high_confidence.sort(key=lambda r: (_is_junk(r["url"]), -r.get("score", 0.0)))
+        _low_confidence.sort(key=lambda r:  (_is_junk(r["url"]), -r.get("score", 0.0)))
+        results = _high_confidence + _low_confidence
     else:
         results.sort(key=_priority)
     debug["t_rerank"] = int((time.monotonic() - t_rerank_start) * 1000)
@@ -503,7 +461,7 @@ async def _fetch_web_context_inner(
     t_wave1_wait = 0.0
     t_wave2_wait = 0.0
     
-    # 2. Time-Boxed Hybrid Fetch Collection
+    # --- Time-boxed fetch ---
     fetch_tasks = {}
     for r in results[:_fetch_pool_size]:
         fetch_tasks[r["url"]] = asyncio.ensure_future(_fetch_one(r))
@@ -512,9 +470,6 @@ async def _fetch_web_context_inner(
     completed_fetches = {}
     
     start_time = time.monotonic()
-    # Max wait time for fetches — normally 5.0s, but clamped down when
-    # rewrite/search/rerank already ate into the shared deadline, so a slow
-    # early stage can't push the total past the outer 20s hard timeout.
     budget = max(0.5, min(5.0, deadline - start_time))
     
     while pending:
@@ -533,7 +488,6 @@ async def _fetch_web_context_inner(
                 completed_fetches[res_r["url"]] = (res_r, content, method)
             except Exception as e:
                 _log.debug("Fetch task failed: %s", e)
-        # Early exit: do we have enough acceptable results?
         accepted_count = sum(
             1 for u, (res_r, content, method) in completed_fetches.items()
             if bool(content.strip()) and _relevant(content, res_r.get("score", 0.0))
@@ -541,13 +495,12 @@ async def _fetch_web_context_inner(
         if accepted_count >= num_urls:
             break
 
-    # Cancel any remaining unused tasks to free I/O
     for task in pending:
         task.cancel()
 
     t_wave1_wait = time.monotonic() - start_time
     
-    # Process the completed fetches in strict semantic order
+    # Process fetches in semantic order
     for r in results:
         if len(parts) >= num_urls:
             break
@@ -561,19 +514,13 @@ async def _fetch_web_context_inner(
     debug["tier2_anchor_rescue"] = 0
     debug["tier2_score_rescue"] = 0
 
-    # URLs already placed into `parts` by tier 1 — every tier below must
-    # dedup against this as it tops up, not just check "is parts empty".
     _used_urls = {r["url"] for r, content, ok in fetched if ok}
 
-    # Graceful degradation: top up through looser tiers whenever tier 1
-    # didn't fill the full num_urls quota — not only when it returned
-    # nothing at all. A partial strict-tier hit (e.g. 3 accepted out of 5
-    # requested) previously left the remaining slots permanently unfilled
-    # even when looser-tier candidates were sitting right there in `fetched`.
+    # --- Degradation tiers: top up when tier 1 didn't fill quota ---
     if len(parts) < num_urls:
         got = {r["url"]: content for r, content, _ok in fetched}
-        # Tier 2: any content mentioning the anchor (relaxed threshold), or highly relevant semantically.
-        for r in results[:_fetch_pool_size]:  # semantic order
+        # Tier 2: anchor match or high score (relaxed)
+        for r in results[:_fetch_pool_size]:
             if len(parts) >= num_urls:
                 break
             url = r["url"]
@@ -593,7 +540,7 @@ async def _fetch_web_context_inner(
         if debug["tier2_anchor_rescue"] or debug["tier2_score_rescue"]:
             debug["degraded"] = "relaxed"
     if len(parts) < num_urls:
-        # Tier 3: DDG snippets as last resort (>= 40 chars).
+        # Tier 3: snippets >= 40 chars
         snips = [
             (r, (r.get("snippet") or "").strip())
             for r in results[:_fetch_pool_size] if r["url"] not in _used_urls
@@ -611,7 +558,7 @@ async def _fetch_web_context_inner(
             debug["degraded"] = debug.get("degraded", "snippet")
 
     if len(parts) < num_urls:
-        # Tier 4: literally any snippet or title we have. Guaranteed context if search returned *anything*.
+        # Tier 4: any snippet or title available
         _tier4_added = 0
         for r in results:
             if len(parts) >= num_urls:
@@ -631,7 +578,7 @@ async def _fetch_web_context_inner(
         _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
         return result
 
-    # Enforce a hard character limit to prevent blowing out the model's context window.
+    # Truncate to context window limit
     max_total_chars = 25000
     truncated_parts = []
     current_length = 0
@@ -669,7 +616,7 @@ async def _fetch_web_context_inner(
 
 
 def inject_web_context(messages: list[dict], web_ctx: str) -> None:
-    """Append the web context + citation instructions to the system message for prompt caching."""
+    """Append web context + citation instructions to the system message."""
     if not web_ctx:
         return
     

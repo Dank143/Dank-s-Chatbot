@@ -8,25 +8,17 @@ from .cache import get_cached_config
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+_DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 _model: TextEmbedding | None = None
 _load_lock = asyncio.Lock()
-# CPU-bound work — cap concurrent inference so simultaneous chat requests
-# don't fight each other for cores the way unlimited to_thread calls would.
-_semaphore = asyncio.Semaphore(4)
+_semaphore = asyncio.Semaphore(4)  # Cap concurrent CPU-bound inference
 
-# If a load attempt fails (bad model path, disk/network issue), back off for
-# this long before trying again instead of re-attempting the full load on
-# every request that lands in the meantime — a broken load is CPU/disk-heavy
-# and unlikely to fix itself within milliseconds.
-_LOAD_RETRY_COOLDOWN_S = 30.0
+_LOAD_RETRY_COOLDOWN_S = 30.0  # Back off after failed load attempts
 _last_load_attempt: float = 0.0
 
 
 async def warmup_embedder() -> None:
-    """Load the ONNX model once at boot. Changing the model name requires a
-    process restart — this is intentionally NOT hot-reloaded like other
-    models.yaml values, since swapping models means re-downloading/loading."""
+    """Load the ONNX model once at boot (requires restart to change model)."""
     global _model, _last_load_attempt
     if _model is not None:
         return
@@ -44,9 +36,7 @@ async def warmup_embedder() -> None:
 
 
 async def _ensure_loaded() -> bool:
-    """Defensive lazy-load, in case a request lands before warmup() finishes.
-    After a failed load, skip retrying until the cooldown elapses so a
-    persistently broken model path doesn't get re-attempted on every request."""
+    """Lazy-load with cooldown on failures."""
     if _model is not None:
         return True
     if _last_load_attempt and (time.monotonic() - _last_load_attempt) < _LOAD_RETRY_COOLDOWN_S:
@@ -56,8 +46,7 @@ async def _ensure_loaded() -> bool:
 
 
 async def embed_texts(texts: list[str]) -> "list[list[float]] | None":
-    """Embed a batch locally. Returns None on failure — caller (`_rerank`)
-    already treats None as 'skip reranking, fall back to heuristic sort'."""
+    """Embed a batch locally. Returns None on failure (caller falls back to heuristic sort)."""
     if not texts:
         return []
     if not await _ensure_loaded():

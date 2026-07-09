@@ -77,6 +77,15 @@ def init_db():
             conn.execute("ALTER TABLE messages ADD COLUMN search_data TEXT")
         except sqlite3.OperationalError:
             pass
+        # Migration: add timing_data column if missing.
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN timing_data TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Index: every send/regenerate queries messages by (chat_id, created_at).
+        # Without this, SQLite full-scans the entire table on every request.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at)")
 
 
 def now_iso() -> str:

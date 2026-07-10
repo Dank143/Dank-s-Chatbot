@@ -1,10 +1,10 @@
 import {
   state, $,
-  messagesEl, inputAreaEl, messageInput, renameBtn, topStarBtn, topDeleteBtn, chatTitleDisplay,
+  messagesEl, inputAreaEl, messageInput, renameBtn, downloadBtn, topStarBtn, topDeleteBtn, chatTitleDisplay,
   dropdownBackdrop, modelSearch, lightbox, lightboxImg,
-  autoResize, updateSendBtn, setWebSearch, setDebugMode, setProvider, scrollToBottom,
-  searchChatBtn, collapsedNewChatBtn, collapsedSearchBtn, collapsedStarBtn, collapsedRecentBtn, sidebar,
-  duoToggleBtn, duoModelSelectorBtn,
+  autoResize, updateSendBtn, setWebSearch, setProvider, scrollToBottom,
+  collapsedNewChatBtn, collapsedStarBtn, collapsedRecentBtn,
+  duoToggleBtn, duoModelSelectorBtn, PROVIDER_UI_CONFIG
 } from './state.js';
 import { api } from './api.js';
 import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel } from './models.js';
@@ -15,7 +15,7 @@ import {
 import { openSettings, closeSettings, saveSettings, updateTempSlider, setKeyStatus, refreshApiKeyWarning } from './settings.js';
 import { toggleTheme } from './theme.js';
 import {
-  sendMessage, showWelcome, openChat, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, renderSidebar,
+  sendMessage, showWelcome, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, downloadCurrentChat
 } from './chat.js';
 
 function stopStreaming() {
@@ -37,10 +37,10 @@ export function setupEventListeners() {
     if (inputAreaEl.style.display !== 'none') {
       const pad = (inputAreaEl.offsetHeight + 16) + 'px';
       const wasAtBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 20;
-      messagesEl.style.paddingBottom = pad;
+      messagesEl.style.setProperty('--messages-pad-bottom', pad);
       if (wasAtBottom) scrollToBottom();
     } else {
-      messagesEl.style.paddingBottom = '28px';
+      messagesEl.style.setProperty('--messages-pad-bottom', '28px');
     }
   });
   ro.observe(inputAreaEl);
@@ -63,20 +63,14 @@ export function setupEventListeners() {
     document.querySelectorAll('.sidebar-popup-wrap.active').forEach(w => w.classList.remove('active'));
   };
 
-  collapsedStarBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const wrap = collapsedStarBtn.closest('.sidebar-popup-wrap');
-    const isActive = wrap.classList.contains('active');
-    closePopups();
-    if (!isActive) wrap.classList.add('active');
-  });
-
-  collapsedRecentBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const wrap = collapsedRecentBtn.closest('.sidebar-popup-wrap');
-    const isActive = wrap.classList.contains('active');
-    closePopups();
-    if (!isActive) wrap.classList.add('active');
+  [collapsedStarBtn, collapsedRecentBtn].forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wrap = btn.closest('.sidebar-popup-wrap');
+      const isActive = wrap.classList.contains('active');
+      closePopups();
+      if (!isActive) wrap.classList.add('active');
+    });
   });
 
   document.addEventListener('click', (e) => {
@@ -85,6 +79,9 @@ export function setupEventListeners() {
     }
   });
   $('themeToggleBtn').addEventListener('click', toggleTheme);
+
+  downloadBtn.addEventListener('click', downloadCurrentChat);
+
   $('settingsBtn').addEventListener('click', openSettings);
   $('apiKeyWarningLink').addEventListener('click', openSettings);
   refreshApiKeyWarning();
@@ -103,6 +100,7 @@ export function setupEventListeners() {
         pill.querySelectorAll('.pill-opt').forEach(b => b.classList.toggle('active', b === btn));
         const listToShow = newProv === 'nim' ? (state.modelsNim || [])
                          : newProv === 'ollama' ? (state.modelsOllama || [])
+                         : newProv === 'cloudflare' ? (state.modelsCloudflare || [])
                          : [];
         renderDropdownList(listToShow);
         return;
@@ -239,6 +237,7 @@ export function setupEventListeners() {
       const activeProv = activePill?.dataset?.provider;
       sourceList = activeProv === 'nim' ? (state.modelsNim || [])
                  : activeProv === 'ollama' ? (state.modelsOllama || [])
+                 : activeProv === 'cloudflare' ? (state.modelsCloudflare || [])
                  : state.models;
     } else {
       sourceList = state.models;
@@ -252,9 +251,6 @@ export function setupEventListeners() {
   $('settingsCloseBtn').addEventListener('click', closeSettings);
   $('settingsCancelBtn').addEventListener('click', closeSettings);
   $('settingsSaveBtn').addEventListener('click', saveSettings);
-  $('settingsBackdrop').addEventListener('click', (e) => {
-    if (e.target === $('settingsBackdrop')) closeSettings();
-  });
   $('apiKeyInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('verifyKeyBtn').click(); }
   });
@@ -279,7 +275,11 @@ export function setupEventListeners() {
     const el = $('apiKeyInput');
     if (el.dataset.sentinel) {
       delete el.dataset.sentinel;
-      setKeyStatus('Enter a new key, or leave blank to keep current.');
+      setKeyStatus('Enter a new key or keep current.');
+    }
+    if (el.dataset.removeKey) {
+      delete el.dataset.removeKey;
+      setKeyStatus('Enter a new key or keep current.');
     }
   });
 
@@ -296,6 +296,7 @@ export function setupEventListeners() {
     const input = $('apiKeyInput');
     const key = input.dataset.sentinel ? null : input.value.trim();
     const baseUrl = $('baseUrlInput').value.trim();
+    const accountId = $('accountIdInput') ? $('accountIdInput').value.trim() : '';
     if (!key && !input.dataset.sentinel) {
       setKeyStatus('Enter a key first.', 'warn');
       return;
@@ -305,10 +306,12 @@ export function setupEventListeners() {
     btn.disabled = true;
     setKeyStatus('');
     try {
+      const config = PROVIDER_UI_CONFIG[state.provider] || PROVIDER_UI_CONFIG.nim;
       const body = {
         provider: state.provider,
-        base_url: baseUrl || (state.provider === 'nim' ? 'https://integrate.api.nvidia.com/v1' : 'https://api.ollama.com/v1')
+        base_url: baseUrl || config.defaultBaseUrl
       };
+      if (config.showAccountId) body.account_id = accountId;
       if (key) body.key = key;
       else {
         const cur = await api(`/settings?provider=${state.provider}`);

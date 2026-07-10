@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Query
 from openai import AsyncOpenAI
 
 from config import (
-    CONFIG_PATH, load_config, replace_scalar, set_env_key,
+    CONFIG_PATH, load_config, replace_scalar, set_env_key, set_env_var,
     provider_api, provider_models, provider_default_model, provider_for_model,
 )
 from schemas import UpdateSettingsBody, VerifyKeyBody, WarmupBody
@@ -74,6 +74,7 @@ def get_settings(provider: str = Query("nim")):
     temperature = load_config().get("defaults", {}).get("temperature", 0.7)
     return {
         "base_url": api.get("base_url", ""),
+        "account_id": api.get("account_id", ""),
         "has_key": has_key,
         "key_hint": hint,
         "key_len": len(key) if has_key else 0,
@@ -100,15 +101,26 @@ async def verify_key(body: VerifyKeyBody):
         # Use a small generic model for verification.
         if body.provider == "nim":
             verify_model = "meta/llama-3.1-8b-instruct"
+        elif body.provider == "cloudflare":
+            verify_model = "@cf/meta/llama-3.1-8b-instruct-fp8"
         else:
             verify_model = "minimax-m3:cloud"
+        
+        base_url_str = body.base_url.strip()
+        if body.provider == "cloudflare" and body.account_id:
+            if "{account_id}" in base_url_str:
+                base_url_str = base_url_str.replace("{account_id}", body.account_id.strip())
+            else:
+                base_url_str = re.sub(r"accounts/[^/]+", f"accounts/{body.account_id.strip()}", base_url_str)
+            
+        client = AsyncOpenAI(api_key=key, base_url=base_url_str, timeout=5.0)
         await client.chat.completions.create(
             model=verify_model,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=1,
         )
         is_local = "localhost" in body.base_url.lower() or "127.0.0.1" in body.base_url
-        msg = "Local endpoint connected, no key needed." if is_local else "Key is valid!"
+        msg = "Local endpoint connected." if is_local else "Key is valid!"
         return {"valid": True, "message": msg}
     except Exception as exc:
         msg = str(exc)
@@ -128,6 +140,10 @@ def update_settings(body: UpdateSettingsBody):
     text = CONFIG_PATH.read_text(encoding="utf-8")
     if body.base_url is not None:
         text = replace_scalar(text, f"api_{prov}", "base_url", body.base_url.strip())
+    if body.account_id is not None:
+        text = replace_scalar(text, f"api_{prov}", "account_id", body.account_id.strip())
+        if prov == "cloudflare":
+            set_env_var("CLOUDFLARE_ACCOUNT_ID", body.account_id.strip())
     if body.temperature is not None:
         text = replace_scalar(text, "defaults", "temperature", str(round(body.temperature, 2)))
     CONFIG_PATH.write_text(text, encoding="utf-8")

@@ -31,7 +31,7 @@ _SLUG_STUFFING_MULTIPLIER = 0.55
 
 # Traffic tier (Tranco)
 _TRAFFIC_TTL = 7 * 24 * 3600.0  # Tranco updates daily; a week-old snapshot is still fine
-_TRAFFIC_TOP_N = 200_000        # bound memory; below this rank we just stay neutral
+_TRAFFIC_TOP_N = 69_420        # bound memory; below this rank we just stay neutral
 _TRAFFIC_RETRY_COOLDOWN_S = 3600.0  # if the download fails, don't hammer it every request
 
 _traffic_ranks: "dict[str, int] | None" = None

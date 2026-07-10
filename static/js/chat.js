@@ -5,8 +5,9 @@ import {
   starredList, recentList, starredLabel, recentsLabel, sidebar,
   escHtml, autoResize, updateSendBtn, setWebSearch, needsWebSearch,
   clientTime, beginStreaming, endStreaming, setProvider,
-  topStarBtn, topDeleteBtn,
+  downloadBtn, topStarBtn, topDeleteBtn,
   duoToggleBtn, duoModelSelectorBtn, duoModelSep,
+  collapsedStarList, collapsedRecentList
 } from './state.js';
 import { api } from './api.js';
 import { clearPendingFiles } from './files.js';
@@ -146,11 +147,32 @@ export async function loadChats() {
   renderSidebar();
 }
 
-export function renderSidebar() {
-  const visibleChats = state.chats;
+// Populate a collapsed sidebar popup list (max 10 items) or show an empty notice.
+function fillCollapsedList(listEl, chats, emptyText) {
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  if (chats.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-popup-item';
+    Object.assign(empty.style, { color: 'var(--text-muted)', cursor: 'default', pointerEvents: 'none' });
+    empty.textContent = emptyText;
+    listEl.appendChild(empty);
+  } else {
+    chats.forEach(c => {
+      const item = document.createElement('div');
+      item.className = 'sidebar-popup-item';
+      item.textContent = c.title || 'New Chat';
+      item.onclick = () => openChat(c.id);
+      listEl.appendChild(item);
+    });
+  }
+}
 
-  const starred = visibleChats.filter((c) => c.starred);
-  const recents  = visibleChats.filter((c) => !c.starred);
+export function renderSidebar() {
+  const chats = state.chats;
+
+  const starred = chats.filter((c) => c.starred);
+  const recents  = chats.filter((c) => !c.starred);
 
   starredLabel.style.display = starred.length ? '' : 'none';
   starredList.innerHTML = '';
@@ -160,49 +182,8 @@ export function renderSidebar() {
   recentList.innerHTML = '';
   recents.forEach((c) => recentList.appendChild(makeChatItem(c)));
 
-  if (collapsedStarList) {
-    collapsedStarList.innerHTML = '';
-    const topStarred = starred.slice(0, 10);
-    if (topStarred.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'sidebar-popup-item';
-      empty.style.color = 'var(--text-muted)';
-      empty.style.cursor = 'default';
-      empty.style.pointerEvents = 'none';
-      empty.textContent = 'No starred chats';
-      collapsedStarList.appendChild(empty);
-    } else {
-      topStarred.forEach(c => {
-        const item = document.createElement('div');
-        item.className = 'sidebar-popup-item';
-        item.textContent = c.title || 'New Chat';
-        item.onclick = () => openChat(c.id);
-        collapsedStarList.appendChild(item);
-      });
-    }
-  }
-
-  if (collapsedRecentList) {
-    collapsedRecentList.innerHTML = '';
-    const topRecents = recents.slice(0, 10);
-    if (topRecents.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'sidebar-popup-item';
-      empty.style.color = 'var(--text-muted)';
-      empty.style.cursor = 'default';
-      empty.style.pointerEvents = 'none';
-      empty.textContent = 'No recent chats';
-      collapsedRecentList.appendChild(empty);
-    } else {
-      topRecents.forEach(c => {
-        const item = document.createElement('div');
-        item.className = 'sidebar-popup-item';
-        item.textContent = c.title || 'New Chat';
-        item.onclick = () => openChat(c.id);
-        collapsedRecentList.appendChild(item);
-      });
-    }
-  }
+  fillCollapsedList(collapsedStarList,   starred.slice(0, 10), 'No starred chats');
+  fillCollapsedList(collapsedRecentList, recents.slice(0, 10), 'No recent chats');
 }
 
 function makeChatItem(chat) {
@@ -309,6 +290,7 @@ export async function openChat(chatId) {
   updateModelLabel();
   chatTitleDisplay.textContent = chat.title;
   renameBtn.style.display = '';
+  downloadBtn.style.display = '';
   topStarBtn.style.display = '';
   topDeleteBtn.style.display = '';
   topStarBtn.querySelector('svg').setAttribute('fill', chat.starred ? 'currentColor' : 'none');
@@ -316,7 +298,7 @@ export async function openChat(chatId) {
 
   welcomeEl.style.display = 'none';
   document.querySelector('.main').appendChild(inputAreaEl);
-  messagesEl.style.display = 'flex';
+  messagesEl.style.display = 'block';
   inputAreaEl.style.display = 'flex';
   messagesEl.innerHTML = '';
 
@@ -450,15 +432,12 @@ export function showWelcome() {
   const hasNim = state.hasKeyNim;
   const hasOllama = state.hasKeyOllama;
   
-  if (hasNim && hasOllama) {
+  if (hasNim) {
     setProvider('nim');
     state.selectedModel = state.defaultModelNim;
-  } else if (!hasNim && hasOllama) {
+  } else if (hasOllama) {
     setProvider('ollama');
     state.selectedModel = state.defaultModelOllama;
-  } else if (hasNim && !hasOllama) {
-    setProvider('nim');
-    state.selectedModel = state.defaultModelNim;
   } else {
     state.selectedModel = state.defaultModel;
   }
@@ -479,6 +458,7 @@ export function showWelcome() {
   setupHomeScreen();
   chatTitleDisplay.textContent = "Dank's Chatbot";
   renameBtn.style.display = 'none';
+  downloadBtn.style.display = 'none';
   topStarBtn.style.display = 'none';
   topDeleteBtn.style.display = 'none';
   renderSidebar();
@@ -643,6 +623,61 @@ export function toggleDuo() {
   if (state.duoMode && !state.selectedModel2) {
     state.selectedModel2 = state.selectedModel;
     updateDuoModelLabel();
+  }
+}
+
+export async function downloadCurrentChat() {
+  if (!state.activeChatId) return;
+  
+  try {
+    const chat = await api('/chats/' + state.activeChatId);
+    if (!chat || !chat.messages) return;
+
+    let md = '# ' + chat.title + '\n\n';
+    md += '**Model(s):** ' + chat.model + '\n';
+    md += '**Duo Mode:** ' + (chat.duo_mode ? 'Yes' : 'No') + '\n\n';
+    md += '---\n\n';
+
+    for (const msg of chat.messages) {
+      if (msg.role === 'user') {
+        md += '## 👤 User\n\n';
+        md += msg.content + '\n\n';
+      } else if (msg.role === 'assistant') {
+        const modelName = msg.model || 'Assistant';
+        const sideLabel = chat.duo_mode ? ` (Side ${msg.duo_side + 1})` : '';
+        md += `## 🤖 ${modelName}${sideLabel}\n\n`;
+        
+        let content = msg.content;
+        const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>\n?/);
+        if (thinkMatch) {
+          const thinkText = thinkMatch[1].trim();
+          const visible = content.slice(thinkMatch[0].length).trim();
+          
+          if (thinkText) {
+            md += '> **Thinking Process:**\n';
+            md += '> ' + thinkText.replace(/\n/g, '\n> ') + '\n\n';
+          }
+          if (visible) {
+            md += visible + '\n\n';
+          }
+        } else {
+          md += content + '\n\n';
+        }
+      }
+      md += '---\n\n';
+    }
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Chat - ${chat.title}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Failed to download chat:', e);
   }
 }
 

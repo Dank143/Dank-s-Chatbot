@@ -60,6 +60,14 @@
   flex: 1;
 }
 
+.model-search-wrap .provider-pill {
+  flex: 1;
+}
+
+.model-search-wrap .pill-opt {
+  flex: 1;
+}
+
 .search-input-icon {
   color: var(--text-muted);
   position: absolute;

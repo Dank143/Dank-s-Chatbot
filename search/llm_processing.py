@@ -27,10 +27,11 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
         "Analyze the user's message and generate a standalone web search query. "
         "Sentence case, resolve pronouns, keep proper nouns. 4-10 words. "
         "Do NOT add past years to the query unless explicitly requested. "
-        "Also determine the optimal search intent.\n"
-        "Output a JSON object with EXACTLY two keys:\n"
+        "Also determine the optimal search intent, and extract the primary entity (subject).\n"
+        "Output a JSON object with EXACTLY three keys:\n"
         '"query": the rewritten search query string.\n'
-        '"intent": one of "wiki", "documentation", "opinion", "dictionary", or "general".'
+        '"intent": one of "wiki", "documentation", "opinion", "dictionary", or "general".\n'
+        '"entity": the primary subject of the query (e.g. "Eiffel Tower", "Python"). Leave empty if none.'
     )
     user_content = f"Conversation so far:\n{context}\n\nLatest message: {raw}\nSearch query:" if context else raw
 
@@ -49,16 +50,16 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
             _log.info("[Background] %s query rewrite completed: %r", model, raw_output)
             try:
                 parsed = json.loads(raw_output)
-                return {"query": parsed.get("query", raw), "intent": parsed.get("intent", "general")}
+                return {"query": parsed.get("query", raw), "intent": parsed.get("intent", "general"), "entity": parsed.get("entity", "")}
             except json.JSONDecodeError:
                 m = re.search(r'\{.*\}', raw_output, re.DOTALL)
                 if m:
                     try:
                         parsed = json.loads(m.group(0))
-                        return {"query": parsed.get("query", raw), "intent": parsed.get("intent", "general")}
+                        return {"query": parsed.get("query", raw), "intent": parsed.get("intent", "general"), "entity": parsed.get("entity", "")}
                     except json.JSONDecodeError:
                         pass
-                return {"query": raw_output, "intent": "general"}
+                return {"query": raw_output, "intent": "general", "entity": ""}
         except Exception as e:
             _log.warning("Query rewrite inner error for %s: %s", model, e)
             return None
@@ -75,7 +76,7 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
         timeout=4.0, logger=_log, task_name="query rewrite",
         primary_name="Ollama", backup_name="NIM"
     )
-    return res if res else {"query": raw, "intent": "general"}
+    return res if res else {"query": raw, "intent": "general", "entity": ""}
 
 
 from .embedder import embed_texts as _fastembed_embed

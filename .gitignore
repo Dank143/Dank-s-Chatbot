@@ -4,6 +4,7 @@ __pycache__/
 # Project specifics
 .env
 .tranco_cache
+API Testing
 chatbot.db
 chatbot.db-shm
 chatbot.db-wal

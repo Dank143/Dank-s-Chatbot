@@ -1,6 +1,6 @@
 import './speech.js';
 import { loadTheme } from './theme.js';
-import { loadModels, updateModelLabel } from './models.js';
+import { loadModels } from './models.js';
 import { loadChats, showWelcome, openChat } from './chat.js';
 import { setupEventListeners } from './events.js';
 import { copyCode, copyMessage, editMessage, retryMessage, retryDuoMessage, downloadCode } from './messages.js';

@@ -6,6 +6,7 @@ export class ChatSearchModal {
   constructor() {
     this.selectionMode = false;
     this.selectedChatIds = new Set();
+    this._cachedSortedChats = [];
 
     // DOM Elements
     this.backdrop = document.getElementById('chatSearchBackdrop');
@@ -75,6 +76,7 @@ export class ChatSearchModal {
     this.modalInput.value = '';
     this.selectionMode = false;
     this.selectedChatIds.clear();
+    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
     this.render();
     this.modalInput.focus();
   }
@@ -120,9 +122,7 @@ export class ChatSearchModal {
     }
 
     const query = (this.modalInput.value || '').toLowerCase();
-    const visibleChats = [...state.chats]
-      .filter(c => c.title.toLowerCase().includes(query))
-      .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    const visibleChats = this._cachedSortedChats.filter(c => c.title.toLowerCase().includes(query));
 
     this.list.innerHTML = '';
 
@@ -235,9 +235,7 @@ export class ChatSearchModal {
     const ids = Array.from(this.selectedChatIds);
     if (!await confirmDialog(`Delete ${ids.length} selected chat(s)?`, 'Delete', 'btn-danger')) return;
     
-    for (const id of ids) {
-      await api(`/chats/${id}`, { method: 'DELETE' });
-    }
+    await Promise.all(ids.map(id => api(`/chats/${id}`, { method: 'DELETE' })));
 
     if (ids.includes(state.activeChatId)) {
       this.close();
@@ -263,9 +261,7 @@ export class ChatSearchModal {
     const actionText = anyUnstarred ? 'Star' : 'Unstar';
     if (!await confirmDialog(`${actionText} ${ids.length} selected chat(s)?`, actionText, 'btn-warning')) return;
     
-    for (const id of ids) {
-      await api(`/chats/${id}`, { method: 'PATCH', body: { starred: anyUnstarred } });
-    }
+    await Promise.all(ids.map(id => api(`/chats/${id}`, { method: 'PATCH', body: { starred: anyUnstarred } })));
     this.selectionMode = false;
     this.selectedChatIds.clear();
     await loadChats();

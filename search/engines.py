@@ -59,7 +59,7 @@ async def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
         resp = await asyncio.wait_for(
             _searxng_client.get(
                 SEARXNG_URL,
-                params={"q": query, "format": "json", "engines": "google,bing,duckduckgo,wikipedia"}
+                params={"q": query, "format": "json"}
             ),
             timeout=5.0
         )

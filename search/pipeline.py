@@ -76,7 +76,7 @@ async def _staggered_search_cascade(
             return t
         return max(0.05, min(t, deadline - time.monotonic()))
 
-    t1 = _cap(0.5 if is_fallback else 0.75)
+    t1 = _cap(0.75 if is_fallback else 1.0)
     searxng_task = asyncio.ensure_future(_searxng_search(searxng_q, max_results))
     
     async def _ddg_with_timeout(timeout: float):
@@ -220,6 +220,7 @@ async def _fetch_web_context_inner(
     
     intent = None
     rewritten = query
+    llm_entity = ""
     for pattern, pattern_intent in _REGEX_INTENTS:
         if pattern.search(query):
             intent = pattern_intent
@@ -232,6 +233,7 @@ async def _fetch_web_context_inner(
         )
         rewritten = rewrite_res.get("query", query)
         intent = rewrite_res.get("intent", "general")
+        llm_entity = rewrite_res.get("entity", "").lower().strip()
     else:
         await _await_warmup()
 
@@ -315,33 +317,36 @@ async def _fetch_web_context_inner(
         return result
 
     # --- Entity anchor extraction ---
-    _noise_words = {
-        "wiki", "the", "and", "for", "with", "from", "site", "of", "in", "on", "at", "to",
-        "list", "what", "who", "when", "where", "why", "how", "show", "give", "tell", "all",
-        "about", "best", "top", "is", "are", "was", "were"
-    }
-    _words_raw = search_query.split()
-    # Multi-word anchor from consecutive capitalized spans
-    _cap_spans: list[str] = []
-    _current_span: list[str] = []
-    for i, w in enumerate(_words_raw):
-        if i > 0 and w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
-            _current_span.append(w.lower())
-        else:
-            if _current_span:
-                _cap_spans.append(" ".join(_current_span))
-                _current_span = []
-    if _current_span:
-        _cap_spans.append(" ".join(_current_span))
-
-    if _cap_spans:
-        _anchor = max(_cap_spans, key=len)
+    if llm_entity:
+        _anchor = llm_entity
     else:
-        _candidates = [
-            w.lower() for w in _words_raw
-            if len(w) > 1 and w.lower() not in _noise_words and not w.isdigit()
-        ]
-        _anchor = max(_candidates, key=len, default="")
+        _noise_words = {
+            "wiki", "the", "and", "for", "with", "from", "site", "of", "in", "on", "at", "to",
+            "list", "what", "who", "when", "where", "why", "how", "show", "give", "tell", "all",
+            "about", "best", "top", "is", "are", "was", "were"
+        }
+        _words_raw = search_query.split()
+        # Multi-word anchor from consecutive capitalized spans
+        _cap_spans: list[str] = []
+        _current_span: list[str] = []
+        for i, w in enumerate(_words_raw):
+            if i > 0 and w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
+                _current_span.append(w.lower())
+            else:
+                if _current_span:
+                    _cap_spans.append(" ".join(_current_span))
+                    _current_span = []
+        if _current_span:
+            _cap_spans.append(" ".join(_current_span))
+
+        if _cap_spans:
+            _anchor = max(_cap_spans, key=len)
+        else:
+            _candidates = [
+                w.lower() for w in _words_raw
+                if len(w) > 1 and w.lower() not in _noise_words and not w.isdigit()
+            ]
+            _anchor = max(_candidates, key=len, default="")
 
     # Fuzzy anchor set: full anchor + individual words for abbreviation matching
     _anchor_words = set(_anchor.split()) if _anchor else set()

@@ -1,11 +1,10 @@
+import { escHtml } from './state.js';
+
 marked.setOptions({ breaks: true, gfm: true });
 
 let _highlight = true;
 export function setHighlight(on) { _highlight = on; }
 
-function _escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 
 const renderer = new marked.Renderer();
 
@@ -16,7 +15,7 @@ renderer.code = (token) => {
     ? (lang && hljs.getLanguage(lang)
         ? hljs.highlight(code, { language: lang }).value
         : hljs.highlightAuto(code).value)
-    : _escapeHtml(code);
+    : escHtml(code);
   const langLabel = lang || 'code';
   return `
 <div class="code-block-wrap">

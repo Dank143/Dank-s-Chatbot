@@ -22,7 +22,7 @@ async def warmup_jina():
 
 _JINA_BASE = "https://r.jina.ai/"
 _MAX_CHARS = 20000
-_MIN_CHARS = 500
+_MIN_CHARS = 250
 _MIN_SNIPPET = 80
 _JINA_TIMEOUT = 5.0
 
@@ -113,8 +113,17 @@ async def _jina_fetch(url: str) -> str:
         res = await _jina_client.get(f"{_JINA_BASE}{url}", headers={"Accept": "text/plain"})
         res.raise_for_status()
         text = res.text
-        if len(text) < _MIN_CHARS or "Just a moment" in text or "Ray ID:" in text:
-            return ""
+        
+        # If Jina returns a Cloudflare block or very short text, retry once with cache bust
+        if len(text) < _MIN_CHARS or "Just a moment" in text or "Ray ID:" in text or "Target URL returned error 403" in text:
+            _log.debug("Jina hit block for %r, retrying with X-No-Cache", url)
+            res = await _jina_client.get(f"{_JINA_BASE}{url}", headers={"Accept": "text/plain", "X-No-Cache": "true"})
+            res.raise_for_status()
+            text = res.text
+            
+            if len(text) < _MIN_CHARS or "Just a moment" in text or "Ray ID:" in text or "Target URL returned error 403" in text:
+                return ""
+                
         return truncate(text)
     except Exception:
         _log.debug("Jina fetch failed for %r", url, exc_info=True)

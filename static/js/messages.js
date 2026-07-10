@@ -1,8 +1,8 @@
-import { state, $, messagesEl, sendBtn, escHtml, escAttr, scrollToBottom, updateSendBtn, needsWebSearch, clientTime, beginStreaming, endStreaming } from './state.js';
+import { state, $, messagesEl, escHtml, escAttr, scrollToBottom, updateSendBtn, needsWebSearch, clientTime, beginStreaming, endStreaming } from './state.js';
 import { api } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { DOC_ICON, _docStore, nextDocKey, openDocViewer } from './files.js';
-import { badgeHtml } from './models.js';
+import { badgeHtml, findModelById } from './models.js';
 import { streamAssistant, getSearchPanelHtml } from './stream.js';
 import { ICON, getAssistantActions } from './icons.js';
 
@@ -74,9 +74,8 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
   } else {
     const { think, visible } = extractThink(msg.content);
     const msgModel = msg.model || state.selectedModel;
-    const modelName = state.modelsNim?.find(m => m.id === msgModel)?.name 
-                   || state.modelsOllama?.find(m => m.id === msgModel)?.name 
-                   || state.models?.find(m => m.id === msgModel)?.name || '';
+    const modelObj  = findModelById(msgModel);
+    const modelName = modelObj?.name || '';
     let searchPanelHtml = '';
     if (msg.search_data) {
       try {
@@ -445,7 +444,8 @@ export async function retryMessage(btn) {
   }
 
   // Mirror send/edit: honor web-search toggle or auto-detect.
-  const lastUser = [...messagesEl.querySelectorAll('.message-wrapper.user .bubble')].pop();
+  const userBubbles = messagesEl.querySelectorAll('.message-wrapper.user .bubble');
+  const lastUser = userBubbles[userBubbles.length - 1];
   const lastUserText = lastUser ? (lastUser.dataset.raw || lastUser.textContent.trim()) : '';
 
   beginStreaming();
@@ -479,8 +479,6 @@ export async function retryMessage(btn) {
 
   endStreaming();
   updateSendBtn();
-  const sendBtn = $('sendBtn');
-  if (sendBtn) sendBtn.disabled = !$('messageInput').value.trim();
   $('messageInput').focus();
   await (await import('./chat.js')).loadChats();
   
@@ -516,7 +514,8 @@ export async function retryDuoMessage(btnOrRow) {
      }
   }
 
-  const lastUser = [...messagesEl.querySelectorAll('.message-wrapper.user .bubble')].pop();
+  const lastUserBubbles = messagesEl.querySelectorAll('.message-wrapper.user .bubble');
+  const lastUser = lastUserBubbles[lastUserBubbles.length - 1];
   const lastUserText = lastUser ? (lastUser.dataset.raw || lastUser.textContent.trim()) : '';
   const webSearch = state.webSearch || needsWebSearch(lastUserText) || undefined;
   const cTime = clientTime();
@@ -558,8 +557,6 @@ export async function retryDuoMessage(btnOrRow) {
 
   endStreaming();
   updateSendBtn();
-  const sendBtn = $('sendBtn');
-  if (sendBtn) sendBtn.disabled = !$('messageInput').value.trim();
   $('messageInput').focus();
   await (await import('./chat.js')).loadChats();
   

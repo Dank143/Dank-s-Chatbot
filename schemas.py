@@ -18,6 +18,7 @@ class UpdateSettingsBody(BaseModel):
     provider: str = "nim"
     key: str | None = None
     base_url: str | None = None
+    account_id: str | None = None
     temperature: float | None = None
 
 
@@ -54,6 +55,7 @@ class VerifyKeyBody(BaseModel):
     provider: str = "nim"
     key: str
     base_url: str
+    account_id: str | None = None
 
 
 class WarmupBody(BaseModel):

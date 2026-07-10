@@ -4,8 +4,10 @@ export const state = {
   provider: localStorage.getItem('provider') || null,
   modelsNim: [],
   modelsOllama: [],
+  modelsCloudflare: [],
   defaultModelNim: null,
   defaultModelOllama: null,
+  defaultModelCloudflare: null,
   models: [],
   selectedModel: null,
   defaultModel: null,
@@ -33,6 +35,34 @@ export const state = {
   autoScroll: localStorage.getItem('autoScroll') !== '0',
   hasKeyNim: false,
   hasKeyOllama: false,
+  hasKeyCloudflare: false,
+};
+
+export const PROVIDER_UI_CONFIG = {
+  nim: {
+    name: 'NVIDIA NIM',
+    keyPlaceholder: 'Enter API key...',
+    defaultBaseUrl: 'https://integrate.api.nvidia.com/v1',
+    showAccountId: false,
+    showBaseUrl: true,
+    baseUrlHint: 'Change this to use a different OpenAI-compatible provider.'
+  },
+  ollama: {
+    name: 'Ollama Cloud',
+    keyPlaceholder: 'Enter API key...',
+    defaultBaseUrl: 'https://api.ollama.com/v1',
+    showAccountId: false,
+    showBaseUrl: true,
+    baseUrlHint: 'Update if the Ollama Cloud endpoint is different'
+  },
+  cloudflare: {
+    name: 'Cloudflare Worker AI',
+    keyPlaceholder: 'Enter API key...',
+    defaultBaseUrl: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1',
+    showAccountId: true,
+    showBaseUrl: false,
+    baseUrlHint: ''
+  }
 };
 
 export const $ = (id) => document.getElementById(id);
@@ -53,6 +83,7 @@ export const dropdownList     = $('dropdownList');
 export const modelSearch      = $('modelSearch');
 export const chatTitleDisplay = $('chatTitleDisplay');
 export const renameBtn        = $('renameBtn');
+export const downloadBtn      = $('downloadBtn');
 export const topStarBtn       = $('topStarBtn');
 export const topDeleteBtn     = $('topDeleteBtn');
 export const sidebar          = $('sidebar');
@@ -63,14 +94,14 @@ export const duoModelSelectorBtn = $('duoModelSelectorBtn');
 export const duoModelSelectorLbl = $('duoModelSelectorLabel');
 export const duoModelSep         = $('duoModelSep');
 
-export const collapsedNewChatBtn = document.getElementById('collapsedNewChatBtn');
-export const collapsedSearchBtn = document.getElementById('collapsedSearchBtn');
-export const collapsedStarBtn = document.getElementById('collapsedStarBtn');
-export const collapsedRecentBtn = document.getElementById('collapsedRecentBtn');
-export const collapsedStarList = document.getElementById('collapsedStarList');
-export const collapsedRecentList = document.getElementById('collapsedRecentList');
-export const chatListWrapper = document.querySelector('.chat-list-wrapper');
-export const newChatBtn = document.getElementById('newChatBtn');
+export const collapsedNewChatBtn  = $('collapsedNewChatBtn');
+export const collapsedSearchBtn   = $('collapsedSearchBtn');
+export const collapsedStarBtn     = $('collapsedStarBtn');
+export const collapsedRecentBtn   = $('collapsedRecentBtn');
+export const collapsedStarList    = $('collapsedStarList');
+export const collapsedRecentList  = $('collapsedRecentList');
+export const chatListWrapper      = document.querySelector('.chat-list-wrapper');
+export const newChatBtn           = $('newChatBtn');
 export const lightbox         = $('lightbox');
 export const lightboxImg      = $('lightboxImg');
 
@@ -108,7 +139,7 @@ export function updateSendBtn() {
     sendBtn.disabled = false;
     return;
   }
-  const noKeys = !state.hasKeyNim && !state.hasKeyOllama;
+  const noKeys = !state.hasKeyNim && !state.hasKeyOllama && !state.hasKeyCloudflare;
   sendBtn.disabled = noKeys || (!messageInput.value.trim() && state.pendingFiles.length === 0);
 }
 
@@ -191,6 +222,9 @@ export function setProvider(p) {
   } else if (p === 'ollama') {
     state.models = state.modelsOllama;
     state.defaultModel = state.defaultModelOllama;
+  } else if (p === 'cloudflare') {
+    state.models = state.modelsCloudflare;
+    state.defaultModel = state.defaultModelCloudflare;
   } else {
     state.models = [];
     state.defaultModel = null;

@@ -307,7 +307,7 @@ async def send_message(chat_id: str, body: SendMessageBody):
         except asyncio.CancelledError:
             content = result.get("content", "").strip() if result else ""
             if not content:
-                content = "_[Generation Stopped by User]_"
+                content = "_Generation stopped by user_"
                 
             timing_data = None
             if result and result.get("ttfs_ms") is not None and result.get("total_ms") is not None:
@@ -457,7 +457,7 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
         except asyncio.CancelledError:
             content = result.get("content", "").strip() if result else ""
             if not content:
-                content = "_[Generation Stopped by User]_"
+                content = "_Generation stopped by user_"
             
             timing_data = None
             if result and result.get("ttfs_ms") is not None and result.get("total_ms") is not None:

@@ -1,4 +1,4 @@
-import { $, state, setAutoSearchDetect, setAutoScroll, setProvider } from './state.js';
+import { $, state, setAutoSearchDetect, setAutoScroll, setProvider, PROVIDER_UI_CONFIG } from './state.js';
 import { api } from './api.js';
 import { loadModels } from './models.js';
 
@@ -47,17 +47,21 @@ export async function openSettings() {
       setProvider('nim');
     }
     
-    const providerNames = { 'nim': 'NVIDIA NIM', 'ollama': 'Ollama Cloud' };
-    const providerName = providerNames[state.provider] || 'NVIDIA NIM';
+    const config = PROVIDER_UI_CONFIG[state.provider] || PROVIDER_UI_CONFIG.nim;
 
     const apiKeyLabel = $('apiKeyLabel');
     if (apiKeyLabel) {
-      apiKeyLabel.textContent = `Enter ${providerName} Key`;
+      apiKeyLabel.textContent = `Enter ${config.name} API Key`;
     }
-    keyInput.placeholder = state.provider === 'nim' ? 'Enter API key...' : 'Enter API key...';
+    keyInput.placeholder = config.keyPlaceholder;
 
     const data = await api(`/settings?provider=${state.provider}`);
     $('baseUrlInput').value = data.base_url || '';
+    if ($('accountIdInput')) $('accountIdInput').value = data.account_id || '';
+    $('accountIdContainer').style.display = config.showAccountId ? '' : 'none';
+    $('baseUrlContainer').style.display = config.showBaseUrl ? '' : 'none';
+    $('baseUrlHint').textContent = config.baseUrlHint;
+    
     keyInput.dataset.hadKey = data.has_key ? '1' : '';
     $('removeKeyBtn').style.display = data.has_key ? '' : 'none';
     if (data.has_key) {
@@ -112,11 +116,15 @@ export async function saveSettings() {
   else key = rawKey;
 
   const baseUrl = $('baseUrlInput').value.trim();
+  const accountId = $('accountIdInput') ? $('accountIdInput').value.trim() : '';
   const temperature = parseFloat($('tempSlider').value);
 
   const body = { provider: state.provider };
   if (key !== null) body.key = key;
   if (baseUrl) body.base_url = baseUrl;
+  
+  const config = PROVIDER_UI_CONFIG[state.provider] || PROVIDER_UI_CONFIG.nim;
+  if (config.showAccountId) body.account_id = accountId;
   if (!isNaN(temperature)) body.temperature = temperature;
   if (Object.keys(body).length <= 1) { 
     setAutoSearchDetect($('autoSearchDetectToggle').checked); 

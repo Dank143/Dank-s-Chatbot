@@ -147,6 +147,13 @@
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
           </svg>
         </button>
+        <button class="icon-btn" id="downloadBtn" title="Download" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+        </button>
         <button class="icon-btn" id="topStarBtn" title="Star" style="display:none">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
@@ -389,6 +396,7 @@
         <div class="provider-pill" id="pickerProviderPill">
           <button class="pill-opt active" data-provider="nim">NVIDIA NIM</button>
           <button class="pill-opt" data-provider="ollama">Ollama Cloud</button>
+          <button class="pill-opt" data-provider="cloudflare">Cloudflare AI</button>
         </div>
       </div>
       <div class="model-picker-body" id="dropdownList"></div>
@@ -437,10 +445,11 @@
 
       <div class="settings-section">
         <div class="settings-section-title">
-          API Configuration
+          Providers
           <div class="provider-pill" id="settingsProviderPill">
             <button class="pill-opt active" data-provider="nim">NVIDIA NIM</button>
             <button class="pill-opt" data-provider="ollama">Ollama Cloud</button>
+            <button class="pill-opt" data-provider="cloudflare">Cloudflare AI</button>
           </div>
         </div>
 
@@ -470,10 +479,16 @@
           </div>
         </div>
 
-        <div class="settings-field">
+        <div class="settings-field" id="accountIdContainer" style="display:none">
+          <label class="settings-label">Account ID</label>
+          <input type="text" id="accountIdInput" placeholder="Cloudflare Account ID" autocomplete="off" spellcheck="false" />
+          <p class="settings-hint">Required for Cloudflare Workers AI.</p>
+        </div>
+
+        <div class="settings-field" id="baseUrlContainer">
           <label class="settings-label">Base URL</label>
           <input type="text" id="baseUrlInput" placeholder="https://integrate.api.nvidia.com/v1" />
-          <p class="settings-hint">Change this to use a different OpenAI-compatible provider.</p>
+          <p class="settings-hint" id="baseUrlHint">Change this to use a different OpenAI-compatible provider.</p>
         </div>
       </div>
 

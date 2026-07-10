@@ -260,11 +260,12 @@
 
 /* ── Duo Message Row (Mixed History) ─────────────────────────────── */
 .duo-message-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  display: flex;
+  align-items: flex-start;
   width: 100%;
   position: relative;
   margin-bottom: 55px;
+  contain: layout; /* Helps prevent scrollHeight miscalculations */
 }
 
 .duo-message-row::before {
@@ -280,7 +281,9 @@
   border-bottom: none;
   display: flex;
   flex-direction: column;
-  max-width: 100%; /* Must be 100% so gaps are controlled exactly by padding */
+  flex: 1;
+  width: 50%;
+  max-width: 50%; 
 }
 
 .duo-message-row > .message-wrapper:first-child {
@@ -354,7 +357,11 @@
 
 @media (max-width: 768px) {
   .duo-message-row {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .duo-message-row > .message-wrapper {
+    max-width: 100%;
+    width: 100%;
   }
   .duo-message-row::before {
     display: none;

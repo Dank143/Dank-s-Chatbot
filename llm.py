@@ -309,6 +309,8 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                         reasoning = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
                         
                     if reasoning:
+                        if not isinstance(reasoning, str):
+                            reasoning = str(reasoning)
                         if t_first is None:
                             t_first = time.monotonic()
                         if t_think_start is None:
@@ -317,9 +319,20 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                         yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning})}\n\n"
                     if not delta.content:
                         continue
+                    
+                    content_val = delta.content
+                    if not isinstance(content_val, str):
+                        logger.warning("llm_stream expected string for delta.content but got %s: %r", type(content_val), content_val)
+                        if isinstance(content_val, dict) and "text" in content_val:
+                            content_val = content_val["text"]
+                        elif isinstance(content_val, list) and len(content_val) > 0 and isinstance(content_val[0], dict) and "text" in content_val[0]:
+                            content_val = content_val[0]["text"]
+                        else:
+                            content_val = str(content_val)
+
                     if t_first is None:
                         t_first = time.monotonic()
-                    chunk = _CHANNEL_OPEN_RE.sub(_THINK_OPEN, delta.content).replace("<channel|>", _THINK_CLOSE)
+                    chunk = _CHANNEL_OPEN_RE.sub(_THINK_OPEN, content_val).replace("<channel|>", _THINK_CLOSE)
                     raw_chunks.append(chunk)
                     visible, thinking = _flush(chunk)
                     if thinking:

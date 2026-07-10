@@ -1,7 +1,6 @@
 import { state, escHtml, scrollToBottom, chatTitleDisplay } from './state.js';
 import { renderMarkdown, setHighlight } from './markdown.js';
-import { api } from './api.js';
-import { finalizeStreamingMessage, showMessageError, showTruncationNotice, showStoppedNotice, searchIndicatorHtml } from './messages.js';
+import { finalizeStreamingMessage, showMessageError, showTruncationNotice, showStoppedNotice, searchIndicatorHtml, thinkingIndicator } from './messages.js';
 
 export function getSearchPanelHtml(evt) {
   const methodIcon = (m) => m === 'failed' ? '✗' : '✓';
@@ -75,8 +74,8 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
     const decoder = new TextDecoder();
     let buf = '';
     const streamBubble = assistantWrapper.querySelector('.bubble');
-    let renderScheduled = false;
-    let lastRender = 0;
+    let thinkRenderScheduled = false, lastThinkRender = 0;
+    let deltaRenderScheduled = false, lastDeltaRender = 0;
     const RENDER_INTERVAL = 200;  // ms between re-parses; final full render at 'done'
 
     while (!finished) {
@@ -90,7 +89,9 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'error') { showMessageError(assistantWrapper, evt.message, ttfsMs, performance.now() - t0); finalized = true; }
               else if (evt.type === 'done') { setHighlight(true); finalizeStreamingMessage(assistantWrapper, ttfsMs, performance.now() - t0); finalized = true; }
-            } catch (_) {}
+            } catch {
+              // ignore
+            }
           }
           buf = '';
         }
@@ -114,6 +115,11 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
           }
         } else if (evt.type === 'search_debug') {
           renderDebugPanel(assistantWrapper, evt);
+          if (streamBubble) {
+            streamBubble.querySelector('.search-indicator')?.remove();
+            streamBubble.querySelector('.thinking-indicator')?.remove();
+            streamBubble.insertAdjacentHTML('afterbegin', thinkingIndicator());
+          }
         } else if (evt.type === 'title') {
           chatTitleDisplay.textContent = evt.title;
           const chat = state.chats.find(c => c.id === state.activeChatId);
@@ -144,13 +150,13 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
             block.dataset.think = thinkRaw;
             
             // Throttle markdown re-parsing for the thinking block.
-            if (!renderScheduled) {
-              renderScheduled = true;
-              const delay = Math.max(0, RENDER_INTERVAL - (performance.now() - lastRender));
+            if (!thinkRenderScheduled) {
+              thinkRenderScheduled = true;
+              const delay = Math.max(0, RENDER_INTERVAL - (performance.now() - lastThinkRender));
               setTimeout(() => {
                 requestAnimationFrame(() => {
-                  renderScheduled = false;
-                  lastRender = performance.now();
+                  thinkRenderScheduled = false;
+                  lastThinkRender = performance.now();
                   if (!streamFinished) {
                     const activeBlock = assistantWrapper.querySelector('.think-block.streaming .think-content');
                     if (activeBlock) {
@@ -182,13 +188,13 @@ export async function streamAssistant(endpoint, body, userWrapper, assistantWrap
           if (streamBubble) {
             streamBubble.dataset.raw = raw;
             // Throttle markdown re-parsing to avoid O(n²) on long replies.
-            if (!renderScheduled) {
-              renderScheduled = true;
-              const delay = Math.max(0, RENDER_INTERVAL - (performance.now() - lastRender));
+            if (!deltaRenderScheduled) {
+              deltaRenderScheduled = true;
+              const delay = Math.max(0, RENDER_INTERVAL - (performance.now() - lastDeltaRender));
               setTimeout(() => {
                 requestAnimationFrame(() => {
-                  renderScheduled = false;
-                  lastRender = performance.now();
+                  deltaRenderScheduled = false;
+                  lastDeltaRender = performance.now();
                   if (!streamFinished) {
                     streamBubble.innerHTML = renderMarkdown(streamBubble.dataset.raw) + '<span class="streaming-cursor"></span>';
                     if (state.autoScroll) scrollToBottom();

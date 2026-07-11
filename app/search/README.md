@@ -72,7 +72,7 @@ A fast-path checks for basic intents using Regex (e.g., matching the word "opini
 If no match, a race between Ollama and NIM models determines the standalone search query and intent, resolving pronouns from conversation history (e.g., "his voicelines" → "Pantheon voicelines"). The current year is appended for freshness.
 
 Keyword rules map the query to an intent:
-- **opinion**: reddit.com (site-scoped)
+- **opinion**: general web (formerly reddit.com)
 - **dictionary**: dictionary.cambridge.org (site-scoped)
 - **documentation**: adds `documentation` suffix
 - **wiki**: Triggers specialized entity discovery

@@ -2,9 +2,9 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from config import load_config
-from database import db_execute, now_iso, run_db_task
-from schemas import CreateChatBody, UpdateChatBody
+from app.config import load_config
+from app.database import db_execute, now_iso, run_db_task
+from app.schemas import CreateChatBody, UpdateChatBody
 
 router = APIRouter(prefix="/api/chats")
 

@@ -5,8 +5,8 @@ import re
 import logging
 from datetime import datetime
 
-from config import load_config
-from llm import race_models, get_client
+from app.config import load_config
+from app.llm import race_models, get_client
 from .cache import get_cached_config
 
 _log = logging.getLogger(__name__)

@@ -6,10 +6,10 @@ A self-hosted AI chat interface powered by [NVIDIA NIM](https://build.nvidia.com
 
 ## Demo Screenshots
 
-![Welcome Screen](demo/Welcome.png)
-![Settings & Config](demo/Config.png)
-![Chat Interface Demo](demo/Chat.png)
-![Model Selection](demo/Models.png)
+![Welcome Screen](.demo/Welcome.png)
+![Settings & Config](.demo/Config.png)
+![Chat Interface Demo](.demo/Chat.png)
+![Model Selection](.demo/Models.png)
 
 ---
 

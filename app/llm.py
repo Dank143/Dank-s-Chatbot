@@ -6,7 +6,7 @@ import time
 
 import httpx
 from openai import AsyncOpenAI
-from config import provider_api
+from app.config import provider_api
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "chatbot.db"
+DB_PATH = Path(__file__).parent.parent / "chatbot.db"
 
 
 def get_db():

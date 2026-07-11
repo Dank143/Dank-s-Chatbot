@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from config import load_config, provider_for_model, provider_model_info, _PROVIDERS
-from database import db_execute, run_db_task, now_iso
-from search import fetch_web_context, inject_web_context
-from llm import build_messages, is_asking_about_creator, llm_stream, reasoning_controls, race_models, get_client
-from schemas import RegenerateBody, SaveAssistantBody, SendMessageBody
+from app.config import load_config, provider_for_model, provider_model_info, _PROVIDERS
+from app.database import db_execute, run_db_task, now_iso
+from app.search import fetch_web_context, inject_web_context
+from app.llm import build_messages, is_asking_about_creator, llm_stream, reasoning_controls, race_models, get_client
+from app.schemas import RegenerateBody, SaveAssistantBody, SendMessageBody
 
 logger = logging.getLogger(__name__)
 

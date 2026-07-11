@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CONFIG_PATH = Path(__file__).parent / "models.yaml"
-ENV_PATH = Path(__file__).parent / ".env"
-SYSTEM_PROMPT_PATH = Path(__file__).parent / ".system_prompt"
+CONFIG_PATH = Path(__file__).parent.parent / "models.yaml"
+ENV_PATH = Path(__file__).parent.parent / ".env"
+SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / ".system_prompt"
 
 _config_cache: dict = {}
 _config_mtime: float = 0.0

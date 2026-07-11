@@ -5,7 +5,7 @@ import re
 import hashlib
 from datetime import datetime
 
-from config import load_config
+from app.config import load_config
 from .fetcher import fetch_content, skip, warmup_jina, shutdown_fetchers
 from .cache import _cache_get, _cache_set, _NEGATIVE_CACHE_TTL
 from .engines import _searxng_search, _ddg_search, _tavily_search, _FANDOM_ALLOW, shutdown_engines, SEARXNG_URL
@@ -252,7 +252,8 @@ async def _fetch_web_context_inner(
     if intent == "documentation":
         suffix = "documentation"
     elif intent == "opinion":
-        site = "reddit.com"
+        # Reddit heavily blocks scraping now (403s), so we don't lock to site:reddit.com
+        pass
     elif intent == "dictionary":
         site = "dictionary.cambridge.org"
 

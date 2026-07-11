@@ -10,13 +10,13 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from database import init_db
-from routers.chats import router as chats_router
-from routers.files import router as files_router
-from routers.messages import router as messages_router
-from routers.settings import router as settings_router, _ping_model
-from search import warmup as _warmup_search, shutdown as _shutdown_search
-from config import load_config
+from app.database import init_db
+from app.routers.chats import router as chats_router
+from app.routers.files import router as files_router
+from app.routers.messages import router as messages_router
+from app.routers.settings import router as settings_router, _ping_model
+from app.search import warmup as _warmup_search, shutdown as _shutdown_search
+from app.config import load_config
 
 
 @asynccontextmanager
@@ -60,10 +60,10 @@ app.include_router(messages_router)
 app.include_router(settings_router)
 app.include_router(files_router)
 
-icon_dir = Path(__file__).parent / "icon"
+icon_dir = Path(__file__).parent.parent / "icon"
 if icon_dir.exists():
     app.mount("/icon", StaticFiles(directory=str(icon_dir)), name="icons")
 
-static_dir = Path(__file__).parent / "static"
+static_dir = Path(__file__).parent.parent / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")

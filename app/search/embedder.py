@@ -3,7 +3,7 @@ import logging
 import time
 
 from fastembed import TextEmbedding
-from config import load_config
+from app.config import load_config
 from .cache import get_cached_config
 
 _log = logging.getLogger(__name__)

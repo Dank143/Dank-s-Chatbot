@@ -5,7 +5,7 @@ import os
 import time
 import httpx
 from ddgs import DDGS
-from config import load_config
+from app.config import load_config
 from .fetcher import skip
 
 _log = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ async def _ddg_search(
             # Fresh DDGS instance per request for clean VQD token
             results = await asyncio.get_running_loop().run_in_executor(
                 _DDG_EXECUTOR,
-                lambda: list(DDGS(timeout=5.0).text(search_query, max_results=max_results, backend="duckduckgo,google,bing,brave,startpage"))
+                lambda: list(DDGS(timeout=5.0).text(search_query, max_results=max_results))
             )
             mapped = [
                 {"url": r["href"], "snippet": r.get("body", ""), "title": r.get("title", "")}

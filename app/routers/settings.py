@@ -7,11 +7,11 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, BackgroundTasks, Body, Query
 from openai import AsyncOpenAI
 
-from config import (
+from app.config import (
     CONFIG_PATH, load_config, replace_scalar, set_env_key, set_env_var,
     provider_api, provider_models, provider_default_model, provider_for_model,
 )
-from schemas import UpdateSettingsBody, VerifyKeyBody, WarmupBody
+from app.schemas import UpdateSettingsBody, VerifyKeyBody, WarmupBody
 
 router = APIRouter(prefix="/api")
 

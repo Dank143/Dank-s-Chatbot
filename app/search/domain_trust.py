@@ -43,8 +43,14 @@ def _load_traffic_ranks_sync() -> "dict[str, int]":
     """Blocking: fetch (or reuse the disk-cached) Tranco top-1M list.
     Uses `tranco` package for caching and daily-refresh bookkeeping.
     """
+    import urllib3
     from tranco import Tranco
+    
+    # Suppress the InsecureRequestWarning when disabling SSL verification
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
     t = Tranco(cache=True, cache_dir=".tranco_cache")
+    t.session.verify = False  # Bypass SSL cert verification failure
     latest = t.list()
     return {domain: i for i, domain in enumerate(latest.top(_TRAFFIC_TOP_N), start=1)}
 

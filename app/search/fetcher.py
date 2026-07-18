@@ -270,22 +270,25 @@ _host_fetcher: "_BoundedLRU" = _BoundedLRU(maxsize=2000)  # host -> last-success
 
 
 async def _race(url: str, labels: list[str]) -> tuple[str, str]:
-    """Race fetchers; return (text, label) of first non-empty."""
-    async def _labeled(label):
-        return label, await _FETCHERS[label](url)
+    """Sequential fast fallback instead of concurrent race to save bandwidth."""
+    # Prioritize trafilatura (direct) over jina (proxy)
+    ordered = []
+    if "trafilatura" in labels: ordered.append("trafilatura")
+    if "mediawiki" in labels: ordered.append("mediawiki")
+    if "jina" in labels: ordered.append("jina")
+    for l in labels:
+        if l not in ordered:
+            ordered.append(l)
 
-    futs = [asyncio.ensure_future(_labeled(l)) for l in labels]
-    try:
-        for coro in asyncio.as_completed(futs):
-            label, text = await coro
+    for label in ordered:
+        try:
+            # Short timeout for each attempt
+            text = await asyncio.wait_for(_FETCHERS[label](url), timeout=3.5)
             if text:
                 return text, label
-    except Exception:
-        pass
-    finally:
-        for f in futs:
-            if not f.done():
-                f.cancel()
+        except (Exception, asyncio.TimeoutError):
+            continue
+            
     return "", ""
 
 

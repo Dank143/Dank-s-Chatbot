@@ -361,11 +361,8 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                     or "503" in exc_str
                     or getattr(exc, "status_code", None) == 503
                 )
-                if is_rate_limit:
-                    last_exc = exc
-                    break
                 if attempt == 0 and not full_content:
-                    logger.warning("llm_stream early-error retry model=%s: %s", model, exc)
+                    logger.warning("llm_stream early-error retry model=%s (rate_limit=%s): %s", model, is_rate_limit, exc)
                     finish_reason = None
                     in_think = False
                     tag_buf = ""
@@ -373,7 +370,8 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                     t_think_start = None
                     raw_chunks.clear()
                     think_content.clear()
-                    await asyncio.sleep(0.6)
+                    # Wait a bit longer if it's a rate limit or cold start
+                    await asyncio.sleep(1.5 if is_rate_limit else 0.6)
                     continue
                 last_exc = exc
                 break

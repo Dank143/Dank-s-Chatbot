@@ -52,7 +52,7 @@
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding-top: 8px;
+  padding-top: 6px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -84,8 +84,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
-  height: 48px;
+  padding: 6px 14px;
+  height: 40px;
   border-bottom: 1px solid transparent;
 }
 
@@ -165,6 +165,10 @@
 .chat-item:hover { background: var(--bg-hover); color: var(--text); }
 .chat-item.active { background: var(--bg-active); color: var(--accent); }
 
+/* When context menu is open, disable all hover interactions on non-active chats */
+body.context-menu-open .chat-item:not(.menu-open) { pointer-events: none; }
+body.context-menu-open .chat-item.menu-open:not(.active) { background: transparent; color: var(--text-sub); }
+
 .chat-item-title {
   flex: 1;
   min-width: 0;
@@ -179,7 +183,8 @@
   gap: 2px;
   flex-shrink: 0;
 }
-.chat-item:hover .chat-item-actions { display: flex; }
+.chat-item:hover .chat-item-actions,
+.chat-item.menu-open .chat-item-actions { display: flex; }
 
 .chat-action-btn {
   display: flex;
@@ -194,7 +199,8 @@
   cursor: pointer;
   transition: background var(--transition), color var(--transition);
 }
-.chat-action-btn:hover { background: var(--bg-active); color: var(--text); }
+.chat-action-btn:hover,
+.chat-item.menu-open .chat-action-btn { background: var(--bg-active); color: var(--text); }
 .chat-action-btn.star-btn.starred { color: #f5a623; }
 .chat-action-btn.delete-btn:hover { color: #ff4444; }
 #topStarBtn.starred { color: #f5a623; }
@@ -468,10 +474,14 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 20px;
+  padding: 4px 20px;
   border-bottom: 1px solid var(--border);
-  min-height: 40px;
+  min-height: 36px;
   transition: border-color var(--transition);
+}
+
+#personaSelectorBtn {
+  padding: 3px 9px;
 }
 
 .chat-title-group {
@@ -490,6 +500,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  position: relative;
+  top: 1.5px;
 }
 
 /* Inline rename: editable title text (topbar + sidebar) */

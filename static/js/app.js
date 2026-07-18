@@ -1,6 +1,6 @@
 import './speech.js';
 import { loadTheme } from './theme.js';
-import { loadModels } from './models.js';
+import { loadModels, loadPersonas } from './models.js';
 import { loadChats, showWelcome, openChat } from './chat.js';
 import { setupEventListeners } from './events.js';
 import { copyCode, copyMessage, editMessage, retryMessage, retryDuoMessage, downloadCode } from './messages.js';
@@ -18,7 +18,7 @@ window.downloadCode = downloadCode;
 async function init() {
   loadTheme();
   fetch('/api/warmup', { method: 'POST' }).catch(() => {});
-  const [, , bootRes] = await Promise.all([loadModels(), loadChats(), fetch('/api/boot-id').then(r => r.json())]);
+  const [, , , bootRes] = await Promise.all([loadModels(), loadPersonas(), loadChats(), fetch('/api/boot-id').then(r => r.json())]);
   setupEventListeners();
 
   const chatSearch = new ChatSearchModal();

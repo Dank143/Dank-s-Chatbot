@@ -11,6 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,400;0,700;1,400&display=swap"
     rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/layout.css?v=1.1" />
   <link rel="stylesheet" href="css/messages.css?v=1.1" />
@@ -133,7 +134,7 @@
     <!-- top bar -->
     <header class="topbar">
       <button class="icon-btn" id="sidebarToggleMobile" title="Toggle sidebar">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="3" y1="6" x2="21" y2="6" />
           <line x1="3" y1="12" x2="21" y2="12" />
           <line x1="3" y1="18" x2="21" y2="18" />
@@ -143,8 +144,10 @@
         <span class="chat-title-display" id="chatTitleDisplay">Dank's Chatbot</span>
         <button class="icon-btn" id="renameBtn" title="Rename" style="display:none">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            <g transform="translate(1, 0)">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </g>
           </svg>
         </button>
         <button class="icon-btn" id="downloadBtn" title="Download" style="display:none">
@@ -159,15 +162,13 @@
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
           </svg>
         </button>
-        <button class="icon-btn" id="topDeleteBtn" title="Delete" style="display:none">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="3 6 5 6 21 6"/>
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-            <path d="M10 11v6"/><path d="M14 11v6"/>
-          </svg>
-        </button>
+
       </div>
       <div class="topbar-right">
+        <button class="model-selector-btn" id="personaSelectorBtn" type="button" title="Select Persona">
+          <span id="personaSelectorIcon" style="font-size: 14px;">🤖</span>
+          <span id="personaSelectorLabel">Default</span>
+        </button>
         <!-- Tips (hover for info) -->
         <div class="tips-wrap">
           <button class="icon-btn" id="tipsBtn" title="Tips" aria-label="Tips">
@@ -323,7 +324,7 @@
       <!-- Normal Mode Header -->
       <div class="model-picker-header search-modal-header" id="chatSearchNormalHeader">
         <div class="search-modal-header-row">
-          <h3>Chats history (from newest to oldest)</h3>
+          <h3>Chats history <span style="font-size: 0.88em; font-weight: normal;">(from newest to oldest)</span></h3>
           <button class="icon-btn" id="chatSearchCloseBtn" title="Close">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -377,7 +378,7 @@
   <div class="modal-backdrop" id="dropdownBackdrop" style="display:none">
     <div class="model-picker-modal" id="modelDropdown">
       <div class="model-picker-header">
-        <h3>Models selection (those with * are vision-enabled)</h3>
+        <h3>Models selection <span style="font-size: 0.88em; font-weight: normal;">(those with * are vision-enabled)</span></h3>
         <button class="icon-btn" id="modelModalCloseBtn" title="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="18" y1="6" x2="6" y2="18" />
@@ -400,6 +401,22 @@
         </div>
       </div>
       <div class="model-picker-body" id="dropdownList"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════  PERSONA PICKER MODAL  ════════════════ -->
+  <div class="modal-backdrop" id="personaDropdownBackdrop" style="display:none">
+    <div class="model-picker-modal" id="personaDropdown">
+      <div class="model-picker-header">
+        <h3>Persona selection <span style="font-size: 0.88em; font-weight: normal;">(intensity varies by model)</span></h3>
+        <button class="icon-btn" id="personaModalCloseBtn" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="model-picker-body model-grid" id="personaDropdownList" style="grid-template-columns: repeat(2, 1fr);"></div>
     </div>
   </div>
 
@@ -546,6 +563,41 @@
       </div>
     </div>
   </div>
+
+  <!-- ═══════════════════════════  CHAT CONTEXT MENU  ══════════════════ -->
+  <div class="chat-context-menu" id="chatContextMenu" style="display:none" role="menu">
+    <div class="context-menu-item" id="ctxRename" role="menuitem">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </svg>
+      <span>Rename</span>
+    </div>
+    <div class="context-menu-item" id="ctxStar" role="menuitem">
+      <svg id="ctxStarIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+      </svg>
+      <span>Star</span>
+    </div>
+    <div class="context-menu-item" id="ctxDownload" role="menuitem">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      <span>Download</span>
+    </div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item text-danger" id="ctxDelete" role="menuitem">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/><path d="M14 11v6"/>
+      </svg>
+      <span>Delete</span>
+    </div>
+  </div>
+
 
   <script type="module" src="js/app.js?v=1.1"></script>
 </body>

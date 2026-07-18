@@ -1,13 +1,13 @@
 import {
   state, $,
-  messagesEl, inputAreaEl, messageInput, renameBtn, downloadBtn, topStarBtn, topDeleteBtn, chatTitleDisplay,
-  dropdownBackdrop, modelSearch, lightbox, lightboxImg,
+  messagesEl, inputAreaEl, messageInput, renameBtn, downloadBtn, topStarBtn, chatTitleDisplay,
+  dropdownBackdrop, personaDropdownBackdrop, personaSelectorBtn, modelSearch, lightbox, lightboxImg,
   autoResize, updateSendBtn, setWebSearch, setProvider, scrollToBottom,
   collapsedNewChatBtn, collapsedStarBtn, collapsedRecentBtn,
   duoToggleBtn, duoModelSelectorBtn, PROVIDER_UI_CONFIG
 } from './state.js';
 import { api } from './api.js';
-import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel } from './models.js';
+import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel, openPersonaDropdown, closePersonaDropdown } from './models.js';
 import {
   readFileAsDataUrl, readFileAsText, isImageFile, isTextFile,
   renderPendingFiles, openDocViewer, closeDocViewer, _docStore,
@@ -15,7 +15,7 @@ import {
 import { openSettings, closeSettings, saveSettings, updateTempSlider, setKeyStatus, refreshApiKeyWarning } from './settings.js';
 import { toggleTheme } from './theme.js';
 import {
-  sendMessage, showWelcome, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, downloadCurrentChat
+  sendMessage, showWelcome, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, downloadChat, closeContextMenu
 } from './chat.js';
 
 function stopStreaming() {
@@ -77,10 +77,13 @@ export function setupEventListeners() {
     if (!e.target.closest('.sidebar-popup-wrap')) {
       closePopups();
     }
+    if (!e.target.closest('.chat-context-menu') && !e.target.closest('.dots-btn')) {
+      closeContextMenu();
+    }
   });
   $('themeToggleBtn').addEventListener('click', toggleTheme);
 
-  downloadBtn.addEventListener('click', downloadCurrentChat);
+  downloadBtn.addEventListener('click', () => downloadChat(state.activeChatId));
 
   $('settingsBtn').addEventListener('click', openSettings);
   $('apiKeyWarningLink').addEventListener('click', openSettings);
@@ -140,15 +143,7 @@ export function setupEventListeners() {
     topStarBtn.classList.toggle('starred', isStarred);
   });
 
-  topDeleteBtn.addEventListener('click', async () => {
-    if (!state.activeChatId) return;
-    const chat = state.chats.find(c => c.id === state.activeChatId);
-    if (!chat) return;
-    if (!await confirmDialog(`Delete "${chat.title}"?`)) return;
-    await api(`/chats/${chat.id}`, { method: 'DELETE' });
-    showWelcome();
-    await loadChats();
-  });
+
 
   $('sendBtn').addEventListener('click', () => state.streaming ? stopStreaming() : sendMessage());
 
@@ -221,6 +216,16 @@ export function setupEventListeners() {
       dropdownBackdrop.style.display === 'none' ? openDropdown() : closeDropdown();
     });
   }
+
+  personaSelectorBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    personaDropdownBackdrop.style.display === 'none' ? openPersonaDropdown() : closePersonaDropdown();
+  });
+
+  personaDropdownBackdrop.addEventListener('click', (e) => {
+    if (e.target === personaDropdownBackdrop) closePersonaDropdown();
+  });
+  $('personaModalCloseBtn').addEventListener('click', closePersonaDropdown);
 
   dropdownBackdrop.addEventListener('click', (e) => {
     if (e.target === dropdownBackdrop) closeDropdown();

@@ -82,6 +82,26 @@ def init_db():
             conn.execute("ALTER TABLE messages ADD COLUMN timing_data TEXT")
         except sqlite3.OperationalError:
             pass
+        # Migration: add persona column if missing.
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN persona TEXT NOT NULL DEFAULT 'default'")
+        except sqlite3.OperationalError:
+            pass
+        # Migration: add model2 column if missing.
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN model2 TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # Migration: add persona2 column if missing.
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN persona2 TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # Migration: add persona column to messages if missing.
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN persona TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Index: every send/regenerate queries messages by (chat_id, created_at).
         # Without this, SQLite full-scans the entire table on every request.

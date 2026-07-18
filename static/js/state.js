@@ -19,6 +19,9 @@ export const state = {
   pendingFiles: [],
   webSearch: false,
   debugMode: false,
+  personas: [],
+  defaultPersona: 'default',
+  selectedPersona: 'default',
   searchTriggers: [
     'search', 'lookup', 'google', 'bing', 'find', 'news', 'breaking', 'weather', 'trending',
     'look up', 'look for', 'find out', 'right now', 'as of now', 'as of today', 'at the moment',
@@ -78,14 +81,17 @@ export const messageInput     = $('messageInput');
 export const sendBtn          = $('sendBtn');
 export const modelSelectorBtn = $('modelSelectorBtn');
 export const modelSelectorLbl = $('modelSelectorLabel');
+export const personaSelectorBtn = $('personaSelectorBtn');
+export const personaSelectorLbl = $('personaSelectorLabel');
 export const dropdownBackdrop = $('dropdownBackdrop');
 export const dropdownList     = $('dropdownList');
+export const personaDropdownBackdrop = $('personaDropdownBackdrop');
+export const personaDropdownList     = $('personaDropdownList');
 export const modelSearch      = $('modelSearch');
 export const chatTitleDisplay = $('chatTitleDisplay');
 export const renameBtn        = $('renameBtn');
 export const downloadBtn      = $('downloadBtn');
 export const topStarBtn       = $('topStarBtn');
-export const topDeleteBtn     = $('topDeleteBtn');
 export const sidebar          = $('sidebar');
 export const searchChatBtn    = $('searchChatBtn');
 

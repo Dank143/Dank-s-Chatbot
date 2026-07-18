@@ -98,7 +98,7 @@ async def _rerank(query: str, results: list[dict]) -> bool:
     if len(results) < 2:
         return False
     snippets = [
-        (f"{r.get('title', '')} {r.get('snippet', '')}".strip() or r["url"])[:512]
+        (f"{r.get('title', '')} {r.get('snippet', '')}".strip() or r["url"])[:256]
         for r in results
     ]
     qv, pv = await asyncio.gather(

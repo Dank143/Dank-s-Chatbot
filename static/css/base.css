@@ -33,7 +33,7 @@
   --sidebar-w:    280px;
   --transition:   .15s ease;
 
-  font-family: "Merriweather", Georgia, serif;
+  font-family: "Merriweather", Georgia, serif, "Noto Color Emoji";
   font-size: 16px;
   line-height: 1.6;
   color: var(--text);

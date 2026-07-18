@@ -202,7 +202,7 @@ html.light .model-tag {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 5px;
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace, "Noto Color Emoji";
   font-size: .88em;
   color: var(--code-inline);
 }
@@ -271,7 +271,7 @@ html.light .model-tag {
 }
 
 .code-block-wrap pre code {
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace, "Noto Color Emoji";
   font-size: 13px;
   background: none !important;
   border: none !important;
@@ -294,7 +294,7 @@ html.light .model-tag {
   font-size: 11px;
   font-weight: 500;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace, "Noto Color Emoji";
   padding-right: 4px;
 }
 
@@ -369,17 +369,24 @@ html.light .model-tag {
   align-self: flex-end;
 }
 
+.edit-content-wrapper {
+  background: var(--bg-msg-user);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius) var(--radius) 4px var(--radius);
+  padding: 11px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
 .edit-textarea {
   width: 100%;
   min-height: 60px;
-  padding: 11px 16px;
   font-family: inherit;
   font-size: 14px;
   line-height: 1.65;
   color: var(--text);
-  background: var(--bg-msg-user);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius) var(--radius) 4px var(--radius);
+  background: transparent;
+  border: none;
   resize: none;
   outline: none;
   overflow: hidden;
@@ -393,6 +400,8 @@ html.light .model-tag {
 
 .edit-attachment-preview {
   margin-bottom: 8px;
+  padding: 0;
+  margin-top: 0;
 }
 
 /* streaming cursor */
@@ -617,6 +626,6 @@ html.light .model-tag {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 4px;
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace, "Noto Color Emoji";
   font-size: 0.88em;
 }

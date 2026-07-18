@@ -10,7 +10,9 @@ from openai import AsyncOpenAI
 from app.config import (
     CONFIG_PATH, load_config, replace_scalar, set_env_key, set_env_var,
     provider_api, provider_models, provider_default_model, provider_for_model,
+    get_personas, get_common_system_prompt
 )
+from app.llm import get_client
 from app.schemas import UpdateSettingsBody, VerifyKeyBody, WarmupBody
 
 router = APIRouter(prefix="/api")
@@ -24,11 +26,10 @@ _WARMUP_TTL = 230
 async def _ping_model(model: str, provider: str = "nim") -> None:
     """One-token request to spin up a serverless model; errors silently ignored."""
     api = provider_api(provider)
-    key = api.get("key", "")
-    if not key or not model:
+    if not api.get("key") or not model:
         return
     try:
-        client = AsyncOpenAI(api_key=key, base_url=api["base_url"])
+        client = get_client(provider)
         await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "hi"}],
@@ -148,3 +149,30 @@ def update_settings(body: UpdateSettingsBody):
         text = replace_scalar(text, "defaults", "temperature", str(round(body.temperature, 2)))
     CONFIG_PATH.write_text(text, encoding="utf-8")
     return {"success": True}
+
+
+@router.get("/personas")
+async def list_personas():
+    """
+    Returns a list of available persona names based on files in the personas directory.
+    """
+    personas = get_personas()
+    
+    persona_list = []
+    for name, content in personas.items():
+        persona_list.append({"id": name, "description": content})
+        
+    # Ensure default is always present
+    if "default" not in [p["id"] for p in persona_list]:
+        persona_list.append({"id": "default", "description": "The original and vanilla AI assistant."})
+        
+    order = {
+        "default": 0, "unhinged": 1, "furious": 2, "horny": 3, 
+        "caveman": 4, "weeboo": 5, "drunk": 6, "batman": 7, 
+        "shakespeare": 8, "god": 9, "emo": 10, "sassy": 11, 
+        "british": 12, "french": 13, "american": 14, "asian": 15
+    }
+    persona_list.sort(key=lambda x: order.get(x["id"].lower(), 99))
+        
+    return {"personas": persona_list, "default": "default"}
+

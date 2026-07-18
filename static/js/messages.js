@@ -293,8 +293,10 @@ export async function editMessage(btn) {
 
   wrapper.innerHTML = `
     <div class="edit-box">
-      ${hasAttachments ? '<div class="attachment-previews edit-attachment-preview"></div>' : ''}
-      <textarea class="edit-textarea">${escHtml(originalText)}</textarea>
+      <div class="edit-content-wrapper">
+        ${hasAttachments ? '<div class="attachment-previews edit-attachment-preview"></div>' : ''}
+        <textarea class="edit-textarea">${escHtml(originalText)}</textarea>
+      </div>
       <div class="edit-actions">
         <button class="btn-secondary edit-cancel-btn">Cancel</button>
         <button class="btn-primary edit-submit-btn">Submit</button>
@@ -379,7 +381,8 @@ export async function editMessage(btn) {
         images: images.length ? images : undefined,
         documents: docs.length ? docs : undefined,
         web_search: state.webSearch || needsWebSearch(newContent) || undefined,
-        client_time: clientTime()
+        client_time: clientTime(),
+        persona: state.selectedPersona
       };
 
       await Promise.all([
@@ -399,7 +402,8 @@ export async function editMessage(btn) {
           images: images.length ? images : undefined,
           documents: docs.length ? docs : undefined,
           web_search: state.webSearch || needsWebSearch(newContent) || undefined,
-          client_time: clientTime()
+          client_time: clientTime(),
+          persona: state.selectedPersona
         },
         userWrapper, assistantWrapper
       );
@@ -472,7 +476,8 @@ export async function retryMessage(btn) {
       web_search: state.webSearch || needsWebSearch(lastUserText) || undefined,
       client_time: clientTime(),
       overwrite_message_id: msgId,
-      duo_side: parseInt(wrapper.dataset.duoSide || 0)
+      duo_side: parseInt(wrapper.dataset.duoSide || 0),
+      persona: state.selectedPersona
     },
     null, wrapper
   );
@@ -547,7 +552,8 @@ export async function retryDuoMessage(btnOrRow) {
         web_search: webSearch,
         client_time: cTime,
         overwrite_message_id: msgId,
-        duo_side: parseInt(wrapper.dataset.duoSide || 0)
+        duo_side: parseInt(wrapper.dataset.duoSide || 0),
+        persona: state.selectedPersona
       },
       null, wrapper
     );

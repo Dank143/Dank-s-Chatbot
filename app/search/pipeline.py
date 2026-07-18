@@ -331,7 +331,7 @@ async def _fetch_web_context_inner(
         _cap_spans: list[str] = []
         _current_span: list[str] = []
         for i, w in enumerate(_words_raw):
-            if i > 0 and w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
+            if w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
                 _current_span.append(w.lower())
             else:
                 if _current_span:
@@ -587,18 +587,15 @@ async def _fetch_web_context_inner(
     # Truncate to context window limit
     max_total_chars = 25000
     truncated_parts = []
-    current_length = 0
+    
+    # Distribute the budget evenly among the actual fetched parts
+    chars_per_part = max_total_chars // max(1, len(parts))
     
     for p in parts:
-        remaining = max_total_chars - current_length
-        if remaining <= 0:
-            break
-        if len(p) > remaining:
-            truncated_parts.append(p[:remaining] + "\n... [truncated to fit context window]")
-            current_length += remaining
+        if len(p) > chars_per_part:
+            truncated_parts.append(p[:chars_per_part] + "\n... [truncated to fit context window]")
         else:
             truncated_parts.append(p)
-            current_length += len(p)
 
     ctx = (
         "=== Web Search Results ===\n\n"

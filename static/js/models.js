@@ -1,4 +1,4 @@
-import { state, $, dropdownList, dropdownBackdrop, modelSearch, modelSelectorLbl, modelSelectorBtn, escHtml, setProvider, updateSendBtn } from './state.js';
+import { state, $, dropdownList, dropdownBackdrop, modelSearch, modelSelectorLbl, modelSelectorBtn, personaSelectorLbl, personaDropdownList, personaDropdownBackdrop, escHtml, setProvider, updateSendBtn } from './state.js';
 import { api } from './api.js';
 
 const PROVIDER_NAMES = {
@@ -205,6 +205,9 @@ export function selectModel2(id) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: id }),
   }).catch(() => { });
+  if (state.activeChatId) {
+    api(`/chats/${state.activeChatId}`, { method: 'PATCH', body: { model2: id } }).catch(() => { });
+  }
 }
 
 export function openDropdown() {
@@ -248,6 +251,80 @@ export function openDropdown() {
 export function closeDropdown() {
   dropdownBackdrop.style.display = 'none';
   state._pickingSlot = 'left';
+}
+
+export const emojiMap = {
+  'default': '🤖',
+  'unhinged': '🤪',
+  'furious': '🤬',
+  'horny': '🥵',
+  'caveman': '🗿',
+  'weeboo': '🤩',
+  'drunk': '🫩',
+  'batman': '💀',
+  'shakespeare': '🧐',
+  'god': '😇',
+  'emo': '😒',
+  'sassy': '🙄',
+  'british': '😎',
+  'french': '🥸',
+  'american': '🤠',
+  'asian': '😑'
+};
+
+export function updatePersonaLabel() {
+  const p = state.selectedPersona || state.defaultPersona || 'default';
+  if (personaSelectorLbl) {
+    personaSelectorLbl.textContent = p.charAt(0).toUpperCase() + p.slice(1);
+    const iconSpan = document.getElementById('personaSelectorIcon');
+    if (iconSpan) {
+      iconSpan.textContent = emojiMap[p.toLowerCase()] || '🎭';
+    }
+  }
+}
+
+export function selectPersona(id) {
+  state.selectedPersona = id;
+  updatePersonaLabel();
+  closePersonaDropdown();
+  if (state.activeChatId) {
+    api(`/chats/${state.activeChatId}`, { method: 'PATCH', body: { persona: id } }).catch(() => { });
+  }
+}
+
+export function renderPersonaDropdown() {
+  const frag = document.createDocumentFragment();
+
+
+  state.personas.forEach(p => {
+    const isSelected = p.id === state.selectedPersona;
+    const card = document.createElement('div');
+    card.className = 'model-card' + (isSelected ? ' selected' : '');
+    const emoji = emojiMap[p.id.toLowerCase()] || '🎭';
+    
+    card.innerHTML = `
+      <div class="model-card-top">
+        <span style="font-size: 16px; margin-right: 2px;">${emoji}</span>
+        <span class="model-card-name" style="text-transform: capitalize;">${escHtml(p.id)}${p.id === 'horny' ? ' <span style="font-size: 0.8em; font-weight: normal; text-transform: none;">(might not pass the safety filter)</span>' : ''}</span>
+      </div>
+      <div class="model-card-desc" style="-webkit-line-clamp: 2; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; margin-top: 4px;">
+        ${escHtml((p.description || '').split(/(?<=[.!?])\s/)[0])}
+      </div>
+    `;
+    card.addEventListener('click', () => selectPersona(p.id));
+    frag.appendChild(card);
+  });
+  personaDropdownList.innerHTML = '';
+  personaDropdownList.appendChild(frag);
+}
+
+export function openPersonaDropdown() {
+  personaDropdownBackdrop.style.display = 'flex';
+  renderPersonaDropdown();
+}
+
+export function closePersonaDropdown() {
+  personaDropdownBackdrop.style.display = 'none';
 }
 
 export async function loadModels() {
@@ -295,4 +372,18 @@ export async function loadModels() {
   updateModelLabel();
   renderDropdownList(state.models);
   updateSendBtn();
+}
+
+export async function loadPersonas() {
+  try {
+    const data = await api('/personas');
+    state.personas = data.personas || [{id: 'default', description: 'Default system prompt.'}];
+    state.defaultPersona = data.default || 'default';
+    if (!state.selectedPersona) {
+      state.selectedPersona = state.defaultPersona;
+    }
+    updatePersonaLabel();
+  } catch (e) {
+    console.error('Failed to load personas:', e);
+  }
 }

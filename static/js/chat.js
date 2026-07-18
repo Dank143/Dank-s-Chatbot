@@ -5,13 +5,13 @@ import {
   starredList, recentList, starredLabel, recentsLabel, sidebar,
   escHtml, autoResize, updateSendBtn, setWebSearch, needsWebSearch,
   clientTime, beginStreaming, endStreaming, setProvider,
-  downloadBtn, topStarBtn, topDeleteBtn,
+  downloadBtn, topStarBtn,
   duoToggleBtn, duoModelSelectorBtn, duoModelSep,
   collapsedStarList, collapsedRecentList
 } from './state.js';
 import { api } from './api.js';
 import { clearPendingFiles } from './files.js';
-import { updateModelLabel, updateDuoModelLabel } from './models.js';
+import { updateModelLabel, updateDuoModelLabel, updatePersonaLabel } from './models.js';
 import { appendMessage, injectRetryDuoButton } from './messages.js';
 import { streamAssistant } from './stream.js';
 
@@ -194,22 +194,11 @@ function makeChatItem(chat) {
   el.innerHTML = `
     <span class="chat-item-title">${escHtml(chat.title)}</span>
     <div class="chat-item-actions">
-      <button class="chat-action-btn rename-item-btn" title="Rename">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-        </svg>
-      </button>
-      <button class="chat-action-btn star-btn ${chat.starred ? 'starred' : ''}" title="${chat.starred ? 'Unstar' : 'Star'}">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="${chat.starred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-        </svg>
-      </button>
-      <button class="chat-action-btn delete-btn" title="Delete">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-          <path d="M10 11v6"/><path d="M14 11v6"/>
+      <button class="chat-action-btn dots-btn" title="Options">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="1"/>
+          <circle cx="12" cy="5" r="1"/>
+          <circle cx="12" cy="19" r="1"/>
         </svg>
       </button>
     </div>
@@ -220,27 +209,85 @@ function makeChatItem(chat) {
     openChat(chat.id);
   });
 
-  el.querySelector('.star-btn').addEventListener('click', async (e) => {
+  el.querySelector('.dots-btn').addEventListener('click', (e) => {
     e.stopPropagation();
-    await api(`/chats/${chat.id}`, { method: 'PATCH', body: { starred: !chat.starred } });
-    await loadChats();
-  });
-
-  el.querySelector('.rename-item-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    startInlineRename(el.querySelector('.chat-item-title'), chat.id, chat.title);
-  });
-
-  el.querySelector('.delete-btn').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    if (!await confirmDialog(`Delete "${chat.title}"?`)) return;
-    await api(`/chats/${chat.id}`, { method: 'DELETE' });
-    if (state.activeChatId === chat.id) showWelcome();
-    await loadChats();
+    openContextMenu(e, chat, el.querySelector('.chat-item-title'));
   });
 
   return el;
 }
+
+export let activeContextMenuEl = null;
+
+export function closeContextMenu() {
+  $('chatContextMenu').style.display = 'none';
+  document.body.classList.remove('context-menu-open');
+  if (activeContextMenuEl) {
+    activeContextMenuEl.classList.remove('menu-open');
+    activeContextMenuEl = null;
+  }
+}
+
+let activeContextMenuChatId = null;
+
+function openContextMenu(e, chat, titleEl) {
+  closeContextMenu();
+  const menu = $('chatContextMenu');
+  activeContextMenuChatId = chat.id;
+  activeContextMenuEl = e.currentTarget.closest('.chat-item');
+  activeContextMenuEl.classList.add('menu-open');
+  document.body.classList.add('context-menu-open');
+  
+  // Set star state
+  const starIcon = $('ctxStarIcon');
+  starIcon.setAttribute('fill', chat.starred ? 'currentColor' : 'none');
+  const starText = $('ctxStar').querySelector('span');
+  if (starText) starText.textContent = chat.starred ? 'Unstar' : 'Star';
+  
+  // Handlers (using element.onclick to replace previous listeners)
+  $('ctxRename').onclick = (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    startInlineRename(titleEl, chat.id, chat.title);
+  };
+  $('ctxStar').onclick = async (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    await api(`/chats/${chat.id}`, { method: 'PATCH', body: { starred: !chat.starred } });
+    await loadChats();
+  };
+  $('ctxDownload').onclick = (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    downloadChat(chat.id);
+  };
+  $('ctxDelete').onclick = async (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    if (!await confirmDialog(`Delete "${chat.title}"?`)) return;
+    await api(`/chats/${chat.id}`, { method: 'DELETE' });
+    if (state.activeChatId === chat.id) showWelcome();
+    await loadChats();
+  };
+
+  menu.style.display = 'block';
+  const rect = e.currentTarget.getBoundingClientRect();
+  
+  // Position menu relative to the button
+  let top = rect.bottom + 4;
+  let left = rect.right - menu.offsetWidth;
+
+  // Ensure it doesn't go off bottom of screen
+  const menuRect = menu.getBoundingClientRect();
+  if (top + menuRect.height > window.innerHeight) {
+    top = rect.top - menuRect.height - 4;
+  }
+  
+  menu.style.top = `${top}px`;
+  menu.style.left = `${left}px`;
+}
+
+
 
 export async function openChat(chatId) {
   if (state.streaming) {
@@ -288,11 +335,12 @@ export async function openChat(chatId) {
 
   state.selectedModel = targetModel;
   updateModelLabel();
+  state.selectedPersona = chat.persona || 'default';
+  updatePersonaLabel();
   chatTitleDisplay.textContent = chat.title;
   renameBtn.style.display = '';
   downloadBtn.style.display = '';
   topStarBtn.style.display = '';
-  topDeleteBtn.style.display = '';
   topStarBtn.querySelector('svg').setAttribute('fill', chat.starred ? 'currentColor' : 'none');
   topStarBtn.classList.toggle('starred', chat.starred);
 
@@ -307,13 +355,13 @@ export async function openChat(chatId) {
   duoModelSep.style.display = state.duoMode ? '' : 'none';
   duoModelSelectorBtn.style.display = state.duoMode ? '' : 'none';
   duoToggleBtn.classList.toggle('active', state.duoMode);
-  let lastModel1 = null;
-  let lastModel2 = null;
+  let lastModel1 = chat.model || null;
+  let lastModel2 = chat.model2 || null;
 
   let i = 0;
   while (i < chat.messages.length) {
     const msg = chat.messages[i];
-    if (msg.role === 'assistant' && i + 1 < chat.messages.length && chat.messages[i+1].role === 'assistant') {
+    if (msg.role === 'assistant' && i + 1 < chat.messages.length && chat.messages[i+1].role === 'assistant' && msg.duo_side !== chat.messages[i+1].duo_side) {
       const row = document.createElement('div');
       row.className = 'duo-message-row';
       messagesEl.appendChild(row);
@@ -375,7 +423,8 @@ export async function openChat(chatId) {
       let isDuo = false;
       // Normal duo pair check
       if (i + 1 < chat.messages.length && chat.messages[i+1].role === 'assistant' && 
-          i + 2 < chat.messages.length && chat.messages[i+2].role === 'assistant') {
+          i + 2 < chat.messages.length && chat.messages[i+2].role === 'assistant' &&
+          chat.messages[i+1].duo_side !== chat.messages[i+2].duo_side) {
         isDuo = true;
       }
       // Orphaned duo check for the user prompt
@@ -419,7 +468,7 @@ export async function openChat(chatId) {
 export async function createNewChat() {
   const chat = await api('/chats', { 
     method: 'POST', 
-    body: { model: state.selectedModel, duo_mode: state.duoMode } 
+    body: { model: state.selectedModel, model2: state.selectedModel2, duo_mode: state.duoMode, persona: state.selectedPersona } 
   });
   state.chats.unshift(chat);
   if (state.webSearch) localStorage.setItem(`webSearch_${chat.id}`, '1');
@@ -451,6 +500,8 @@ export function showWelcome() {
   setWebSearch(false);
   clearPendingFiles();
   updateModelLabel();
+  state.selectedPersona = state.defaultPersona;
+  updatePersonaLabel();
   welcomeEl.insertBefore(inputAreaEl, $('questionChips'));
   welcomeEl.style.display = 'flex';
   messagesEl.style.display = 'none';
@@ -460,7 +511,6 @@ export function showWelcome() {
   renameBtn.style.display = 'none';
   downloadBtn.style.display = 'none';
   topStarBtn.style.display = 'none';
-  topDeleteBtn.style.display = 'none';
   renderSidebar();
 }
 
@@ -501,6 +551,7 @@ export async function sendMessage() {
       documents: documents.length ? documents : undefined,
       web_search: state.webSearch || needsWebSearch(content) || undefined,
       client_time: clientTime(),
+      persona: state.selectedPersona,
     };
 
     await Promise.allSettled([
@@ -528,7 +579,8 @@ export async function sendMessage() {
         images: images.length ? images : undefined,
         documents: documents.length ? documents : undefined,
         web_search: state.webSearch || needsWebSearch(content) || undefined,
-        client_time: clientTime() },
+        client_time: clientTime(),
+        persona: state.selectedPersona },
       userWrapper,
       assistantWrapper
     );
@@ -626,15 +678,23 @@ export function toggleDuo() {
   }
 }
 
-export async function downloadCurrentChat() {
-  if (!state.activeChatId) return;
+export async function downloadChat(targetId) {
+  if (!targetId) return;
   
   try {
-    const chat = await api('/chats/' + state.activeChatId);
+    const chat = await api('/chats/' + targetId);
     if (!chat || !chat.messages) return;
 
     let md = '# ' + chat.title + '\n\n';
-    md += '**Model(s):** ' + chat.model + '\n';
+    md += '**Model(s):** ' + chat.model;
+    if (chat.duo_mode) {
+      const model2Msg = chat.messages.find(m => m.role === 'assistant' && m.duo_side === 1);
+      if (model2Msg && model2Msg.model) {
+        md += ' & ' + model2Msg.model;
+      }
+    }
+    md += '\n';
+    md += '**Persona:** ' + (chat.persona || 'default') + '\n';
     md += '**Duo Mode:** ' + (chat.duo_mode ? 'Yes' : 'No') + '\n\n';
     md += '---\n\n';
 

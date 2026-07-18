@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.config import load_config, provider_for_model, provider_model_info, _PROVIDERS
+from app.config import (
+    load_config,
+    provider_model_info,
+    provider_for_model,
+    get_personas,
+    get_common_system_prompt,
+)
 from app.database import db_execute, run_db_task, now_iso
 from app.search import fetch_web_context, inject_web_context
 from app.llm import build_messages, is_asking_about_creator, llm_stream, reasoning_controls, race_models, get_client
@@ -29,19 +35,19 @@ def _fallback_title(text: str) -> str:
     return text[:60].strip() + ("…" if len(text) > 60 else "")
 
 
-async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str | None", model: "str | None" = None, overwrite: bool = False, duo_side: int = 0, search_data: "str | None" = None, timing_data: "str | None" = None) -> None:
+async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str | None", model: "str | None" = None, overwrite: bool = False, duo_side: int = 0, search_data: "str | None" = None, timing_data: "str | None" = None, persona: "str | None" = None) -> None:
     """Persist an assistant message, bump the chat, and optionally set its title."""
     def _task(conn):
         ts = now_iso()
         if overwrite:
             conn.execute(
-                "UPDATE messages SET content=?, model=?, duo_side=?, search_data=?, timing_data=? WHERE id=?",
-                (content, model, duo_side, search_data, timing_data, msg_id)
+                "UPDATE messages SET content=?, model=?, duo_side=?, search_data=?, timing_data=?, persona=? WHERE id=?",
+                (content, model, duo_side, search_data, timing_data, persona, msg_id)
             )
         else:
             conn.execute(
-                "INSERT INTO messages (id, chat_id, role, content, created_at, model, duo_side, search_data, timing_data) VALUES (?,?,?,?,?,?,?,?,?)",
-                (msg_id, chat_id, "assistant", content, ts, model, duo_side, search_data, timing_data),
+                "INSERT INTO messages (id, chat_id, role, content, created_at, model, duo_side, search_data, timing_data, persona) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (msg_id, chat_id, "assistant", content, ts, model, duo_side, search_data, timing_data, persona),
             )
         conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (ts, chat_id))
         if title:
@@ -51,15 +57,11 @@ async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str |
 
 def _model_reasoning(model_id: str) -> "str | None":
     """The `reasoning` tag for a model id from models.yaml, or None if untagged."""
-    cfg = load_config()
-    for p in _PROVIDERS:
-        for m in cfg.get(f"models_{p}", []):
-            if m.get("id") == model_id:
-                return m.get("reasoning")
-    return None
+    info = provider_model_info(model_id)
+    return info.get("reasoning") if info else None
 
 
-def _build_request(history, today: str, model: str):
+def _build_request(history, today: str, model: str, persona: str = "default"):
     """Shared message/generation setup for send + regenerate."""
     defaults = load_config().get("defaults", {})
     max_turns = defaults.get("max_history_turns", 50)
@@ -75,7 +77,16 @@ def _build_request(history, today: str, model: str):
     else:
         extra_system = model_identity
 
-    messages = build_messages(history, defaults.get("system_prompt"), today, extra_system)
+    personas = get_personas()
+    base_prompt = get_common_system_prompt()
+    persona_modifier = personas.get(persona, "")
+    
+    if persona_modifier:
+        system_prompt = f"{base_prompt}\n\n{persona_modifier}".strip()
+    else:
+        system_prompt = base_prompt
+
+    messages = build_messages(history, system_prompt, today, extra_system)
     prov = provider_for_model(model)
     return (get_client(prov), messages,
             defaults.get("max_tokens", 2048), defaults.get("temperature", 0.5), extra_create)
@@ -156,15 +167,22 @@ async def send_message(chat_id: str, body: SendMessageBody):
         if not chat:
             raise HTTPException(404, "Chat not found")
         chat = dict(chat)
-        model: str = str(body.model or chat["model"] or cfg.get("default_model") or "")
+        if body.duo_side == 1:
+            model: str = str(body.model or chat.get("model2") or cfg.get("default_model") or "")
+            persona: str = str(body.persona or chat.get("persona2") or "default")
+        else:
+            model: str = str(body.model or chat.get("model") or cfg.get("default_model") or "")
+            persona: str = str(body.persona or chat.get("persona") or "default")
         ts = now_iso()
         if not body.skip_user_save:
             conn.execute(
-                "INSERT INTO messages (id, chat_id, role, content, created_at, attachments, model) VALUES (?,?,?,?,?,?,?)",
-                (user_msg_id, chat_id, "user", body.content, ts, att_json, model),
+                "INSERT INTO messages (id, chat_id, role, content, created_at, attachments, model, persona) VALUES (?,?,?,?,?,?,?,?)",
+                (user_msg_id, chat_id, "user", body.content, ts, att_json, model, persona),
             )
-        conn.execute("UPDATE chats SET model=?, updated_at=? WHERE id=?", (model, ts, chat_id))
-        conn.execute("UPDATE chats SET model=?, updated_at=? WHERE id=?", (model, ts, chat_id))
+        if body.duo_side == 1:
+            conn.execute("UPDATE chats SET model2=?, persona2=?, updated_at=? WHERE id=?", (model, persona, ts, chat_id))
+        else:
+            conn.execute("UPDATE chats SET model=?, persona=?, updated_at=? WHERE id=?", (model, persona, ts, chat_id))
         
         # Calculate a safe SQL limit. A turn is roughly 2 messages. In Duo mode, messages are interleaved, 
         # so we fetch 4x the max_turns to ensure we have enough history after filtering.
@@ -194,11 +212,18 @@ async def send_message(chat_id: str, body: SendMessageBody):
         # We run _build_request inside the database thread to prevent heavy Regex 
         # operations (stripping massive <think> blocks) from blocking the main async event loop!
         today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model)
+        
+        # EXPERIMENT: Add more years to today. Comment when finished experimenting.
+        # try:
+        #     today = re.sub(r'\b20\d{2}\b', lambda m: str(int(m.group(0)) + 61), today)
+        # except Exception:
+        #     pass
+        
+        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model, persona)
                 
-        return model, chat["title"] == "New Chat", history, client, api_messages, max_tokens, temperature, extra_create
+        return model, persona, chat["title"] == "New Chat", history, client, api_messages, max_tokens, temperature, extra_create
 
-    model, needs_title, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
+    model, persona, needs_title, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
 
     # Launch title generation early so it overlaps with web search & streaming.
     title_seed = body.content
@@ -244,7 +269,7 @@ async def send_message(chat_id: str, body: SendMessageBody):
             creator_resp = is_asking_about_creator(body.content)
             if creator_resp:
                 fallback = _fallback_title(body.content) if needs_title and body.content else None
-                await _save_assistant(chat_id, asst_msg_id, creator_resp, fallback, model, False, body.duo_side, search_debug_json)
+                await _save_assistant(chat_id, asst_msg_id, creator_resp, fallback, model, False, body.duo_side, search_debug_json, None, persona)
                 yield f"data: {json.dumps({'type': 'delta', 'content': creator_resp})}\n\n"
                 if fallback:
                     yield f"data: {json.dumps({'type': 'title', 'title': fallback})}\n\n"
@@ -282,7 +307,7 @@ async def send_message(chat_id: str, body: SendMessageBody):
                     timing_payload["thought_time_ms"] = result["thought_time_ms"]
                 timing_data = json.dumps(timing_payload)
                 
-            await _save_assistant(chat_id, asst_msg_id, hail + result["content"], None, model, False, body.duo_side, search_debug_json, timing_data)
+            await _save_assistant(chat_id, asst_msg_id, hail + result["content"], None, model, False, body.duo_side, search_debug_json, timing_data, persona)
             
             done_payload = {'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')}
             if timing_data:
@@ -317,7 +342,7 @@ async def send_message(chat_id: str, body: SendMessageBody):
                 timing_data = json.dumps(timing_payload)
                 
             asyncio.create_task(_save_assistant(
-                chat_id, asst_msg_id, hail + content, None, model, False, body.duo_side, search_debug_json, timing_data
+                chat_id, asst_msg_id, hail + content, None, model, False, body.duo_side, search_debug_json, timing_data, persona
             ))
             raise
 
@@ -351,8 +376,8 @@ async def save_assistant_message(chat_id: str, body: SaveAssistantBody):
             raise HTTPException(404, "Chat not found")
         ts = now_iso()
         conn.execute(
-            "INSERT INTO messages (id, chat_id, role, content, created_at, model, timing_data) VALUES (?,?,?,?,?,?,?)",
-            (msg_id, chat_id, "assistant", body.content, ts, cfg.get("default_model", ""), body.timing_data),
+            "INSERT INTO messages (id, chat_id, role, content, created_at, model, timing_data, persona) VALUES (?,?,?,?,?,?,?,?)",
+            (msg_id, chat_id, "assistant", body.content, ts, cfg.get("default_model", ""), body.timing_data, None),
         )
         conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (ts, chat_id))
     await run_db_task(_task)
@@ -368,7 +393,12 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
         if not chat:
             raise HTTPException(404, "Chat not found")
         chat = dict(chat)
-        model: str = str(body.model or chat["model"] or cfg.get("default_model") or "")
+        if body.duo_side == 1:
+            model: str = str(body.model or chat.get("model2") or cfg.get("default_model") or "")
+            persona: str = str(body.persona or chat.get("persona2") or "default")
+        else:
+            model: str = str(body.model or chat.get("model") or cfg.get("default_model") or "")
+            persona: str = str(body.persona or chat.get("persona") or "default")
         
         max_turns = cfg.get("defaults", {}).get("max_history_turns", 50)
         sql_limit = max(max_turns * 4, 20)
@@ -389,10 +419,17 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
             return model, [], None, None, None, None, None
 
         today = body.client_time or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model)
-        return model, history, client, api_messages, max_tokens, temperature, extra_create
 
-    model, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
+        # EXPERIMENT: Add more years to today. Comment when finished experimenting.
+        # try:
+        #     today = re.sub(r'\b20\d{2}\b', lambda m: str(int(m.group(0)) + 61), today)
+        # except Exception:
+        #     pass
+        
+        client, api_messages, max_tokens, temperature, extra_create = _build_request(history, today, model, persona)
+        return model, persona, history, client, api_messages, max_tokens, temperature, extra_create
+
+    model, persona, history, client, api_messages, max_tokens, temperature, extra_create = await run_db_task(_setup)
 
     if not history:
         raise HTTPException(400, "No messages to regenerate from")
@@ -446,7 +483,7 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
                     timing_payload["thought_time_ms"] = result["thought_time_ms"]
                 timing_data = json.dumps(timing_payload)
                 
-            await _save_assistant(chat_id, asst_msg_id, result["content"], None, model, overwrite=bool(body.overwrite_message_id), duo_side=body.duo_side, search_data=search_debug_json, timing_data=timing_data)
+            await _save_assistant(chat_id, asst_msg_id, result["content"], None, model, overwrite=bool(body.overwrite_message_id), duo_side=body.duo_side, search_data=search_debug_json, timing_data=timing_data, persona=persona)
             
             done_payload = {'type': 'done', 'asst_msg_id': asst_msg_id, 'finish_reason': result.get('finish_reason')}
             if timing_data:
@@ -468,7 +505,7 @@ async def regenerate_response(chat_id: str, body: RegenerateBody):
                 
             asyncio.create_task(_save_assistant(
                 chat_id, asst_msg_id, content, None, model, 
-                bool(body.overwrite_message_id), body.duo_side, search_debug_json, timing_data
+                bool(body.overwrite_message_id), body.duo_side, search_debug_json, timing_data, persona
             ))
             raise
 

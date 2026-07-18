@@ -245,6 +245,7 @@ export class ChatSearchModal {
     this.selectionMode = false;
     this.selectedChatIds.clear();
     await loadChats();
+    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
     this.render();
   }
 
@@ -265,6 +266,7 @@ export class ChatSearchModal {
     this.selectionMode = false;
     this.selectedChatIds.clear();
     await loadChats();
+    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
     this.render();
   }
 }

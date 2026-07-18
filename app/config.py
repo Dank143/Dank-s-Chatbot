@@ -20,6 +20,8 @@ _yaml_ollama_key: str = ""
 _yaml_cloudflare_key: str = ""
 _yaml_cloudflare_account_id: str = ""
 _STAT_TTL = 5.0  # seconds between stat() calls
+# model_id -> (provider, model_entry) for O(1) lookups
+_model_index: dict[str, tuple[str, dict]] = {}
 
 _PROVIDERS = ("nim", "ollama", "cloudflare")
 _ENV_KEY_MAP = {"nim": "NVIDIA_API_KEY", "ollama": "OLLAMA_API_KEY", "cloudflare": "CLOUDFLARE_API_KEY"}
@@ -27,7 +29,7 @@ _ENV_KEY_MAP = {"nim": "NVIDIA_API_KEY", "ollama": "OLLAMA_API_KEY", "cloudflare
 
 def load_config() -> dict:
     """Return cached models.yaml, re-reading only when the file's mtime changes."""
-    global _config_cache, _config_mtime, _config_checked, _yaml_nim_key, _yaml_ollama_key, _yaml_cloudflare_key, _yaml_cloudflare_account_id
+    global _config_cache, _config_mtime, _config_checked, _yaml_nim_key, _yaml_ollama_key, _yaml_cloudflare_key, _yaml_cloudflare_account_id, _model_index
     now = time.monotonic()
     if now - _config_checked >= _STAT_TTL:
         _config_checked = now
@@ -40,6 +42,14 @@ def load_config() -> dict:
             _yaml_ollama_key = _config_cache.get("api_ollama", {}).get("key", "")
             _yaml_cloudflare_key = _config_cache.get("api_cloudflare", {}).get("key", "")
             _yaml_cloudflare_account_id = _config_cache.get("api_cloudflare", {}).get("account_id", "")
+            # Rebuild the model index on config reload.
+            idx: dict[str, tuple[str, dict]] = {}
+            for p in _PROVIDERS:
+                for m in _config_cache.get(f"models_{p}", []):
+                    mid = m.get("id")
+                    if mid:
+                        idx[mid] = (p, m)
+            _model_index = idx
     # Env keys override YAML keys; fall back to YAML if env is unset.
     env_nim = os.environ.get("NVIDIA_API_KEY", "")
     _config_cache.setdefault("api_nim", {})["key"] = env_nim or _yaml_nim_key
@@ -100,22 +110,16 @@ def provider_default_model(provider: str) -> str:
 
 def provider_for_model(model_id: str) -> str:
     """Determine which provider a model belongs to. Falls back to 'nim'."""
-    cfg = load_config()
-    for p in _PROVIDERS:
-        for m in cfg.get(f"models_{p}", []):
-            if m.get("id") == model_id:
-                return p
-    return "nim"
+    load_config()  # ensure index is fresh
+    entry = _model_index.get(model_id)
+    return entry[0] if entry else "nim"
 
 
 def provider_model_info(model_id: str) -> dict | None:
     """Return the model entry from models.yaml for the given model id."""
-    cfg = load_config()
-    for p in _PROVIDERS:
-        for m in cfg.get(f"models_{p}", []):
-            if m.get("id") == model_id:
-                return m
-    return None
+    load_config()  # ensure index is fresh
+    entry = _model_index.get(model_id)
+    return entry[1] if entry else None
 
 
 def set_env_var(env_var: str, value: str) -> None:
@@ -146,3 +150,60 @@ def replace_scalar(content: str, section: str, key: str, value: str) -> str:
         content,
         flags=re.MULTILINE,
     )
+
+
+_sys_prompt_cache: str = ""
+_sys_prompt_mtime: float = 0.0
+_sys_prompt_checked: float = 0.0
+
+
+def get_common_system_prompt() -> str:
+    """Return the base system prompt from the root directory (stat-cached)."""
+    global _sys_prompt_cache, _sys_prompt_mtime, _sys_prompt_checked
+    path = SYSTEM_PROMPT_PATH
+    now = time.monotonic()
+    if now - _sys_prompt_checked >= _STAT_TTL:
+        _sys_prompt_checked = now
+        try:
+            if path.is_file():
+                mtime = path.stat().st_mtime
+                if mtime != _sys_prompt_mtime:
+                    _sys_prompt_mtime = mtime
+                    _sys_prompt_cache = path.read_text(encoding="utf-8").strip()
+            else:
+                _sys_prompt_cache = ""
+        except Exception:
+            pass
+    return _sys_prompt_cache
+
+
+_personas_cache: dict[str, str] = {}
+_personas_mtime: float = 0.0
+_personas_checked: float = 0.0
+_PERSONAS_DIR = Path(__file__).parent.parent / "personas"
+
+
+def get_personas() -> dict[str, str]:
+    """Scan the personas directory for .txt files and return a dict of persona -> prompt (stat-cached)."""
+    global _personas_cache, _personas_mtime, _personas_checked
+    now = time.monotonic()
+    if now - _personas_checked >= _STAT_TTL:
+        _personas_checked = now
+        try:
+            if _PERSONAS_DIR.is_dir():
+                # Use the directory's own mtime as the change signal.
+                mtime = _PERSONAS_DIR.stat().st_mtime
+                if mtime != _personas_mtime:
+                    _personas_mtime = mtime
+                    personas: dict[str, str] = {}
+                    for path in _PERSONAS_DIR.glob("*.txt"):
+                        if not path.is_file():
+                            continue
+                        try:
+                            personas[path.stem] = path.read_text(encoding="utf-8").strip()
+                        except Exception:
+                            pass
+                    _personas_cache = personas
+        except Exception:
+            pass
+    return _personas_cache

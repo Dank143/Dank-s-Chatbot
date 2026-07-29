@@ -127,7 +127,9 @@ def build_api_content(text: str, attachments: dict) -> "str | list":
         return full_text
     parts: list[dict] = [{"type": "text", "text": full_text}] if full_text else []
     for img in images:
-        parts.append({"type": "image_url", "image_url": {"url": img}})
+        # Support both old format (plain URL string) and new format ({name, dataUrl} object).
+        url = img["dataUrl"] if isinstance(img, dict) else img
+        parts.append({"type": "image_url", "image_url": {"url": url}})
     return parts
 
 
@@ -135,25 +137,8 @@ def _to_parts(content: "str | list") -> list[dict]:
     return content if isinstance(content, list) else [{"type": "text", "text": content}]
 
 
-
 def reasoning_controls(reasoning: str | None) -> tuple[dict, str | None]:
-    """Map a model's YAML `reasoning` tag to (extra create() kwargs, system suffix).
-
-    Currently disabled — thinking runs freely. Uncomment the block below
-    to re-enable per-family suppression (qwen, gptoss, nemotron, etc.).
-    """
-    # if reasoning == "qwen":
-    #     return {"extra_body": {"chat_template_kwargs": {"thinking": False}}}, None
-    # if reasoning == "gptoss":
-    #     return {"reasoning_effort": "low"}, None
-    # if reasoning == "nemotron":
-    #     return {}, "detailed thinking off"
-    # if reasoning == "minimax":
-    #     return {"extra_body": {"thinking": {"type": "disabled"}}}, None
-    # if reasoning == "kimi":
-    #     return {}, "You must respond directly. Do not use extended thinking or output reasoning chains."
-    # if reasoning == "glm":
-    #     return {}, "You must respond directly. Do not use extended thinking or output reasoning chains."
+    """Map a model's YAML `reasoning` tag to (extra create() kwargs, system suffix)."""
     return {}, None
 
 
@@ -226,6 +211,10 @@ def build_messages(history, system_prompt: str | None, today: str | None = None,
 _THINK_OPEN  = "<think>"
 _THINK_CLOSE = "</think>"
 _CHANNEL_OPEN_RE = re.compile(r'<\|channel>[^\n]*\n?')
+
+def _is_rate_limit(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return "429" in s or getattr(exc, "status_code", None) == 429 or "exhausted" in s or "overloaded" in s or "503" in s or getattr(exc, "status_code", None) == 503
 
 
 async def llm_stream(client, model, messages, max_tokens, temperature, result: dict,
@@ -351,44 +340,20 @@ async def llm_stream(client, model, messages, max_tokens, temperature, result: d
                 last_exc = None
                 break
             except Exception as exc:
-                exc_str = str(exc)
-                is_rate_limit = (
-                    "429" in exc_str
-                    or getattr(exc, "status_code", None) == 429
-                    or "ResourceExhausted" in exc_str
-                    or "resource_exhausted" in exc_str.lower()
-                    or "overloaded" in exc_str.lower()
-                    or "503" in exc_str
-                    or getattr(exc, "status_code", None) == 503
-                )
+                is_rl = _is_rate_limit(exc)
                 if attempt == 0 and not full_content:
-                    logger.warning("llm_stream early-error retry model=%s (rate_limit=%s): %s", model, is_rate_limit, exc)
-                    finish_reason = None
-                    in_think = False
-                    tag_buf = ""
-                    t_first = None
-                    t_think_start = None
+                    logger.warning("llm_stream early-error retry model=%s (rate_limit=%s): %s", model, is_rl, exc)
+                    finish_reason, in_think, tag_buf, t_first, t_think_start = None, False, "", None, None
                     raw_chunks.clear()
                     think_content.clear()
-                    # Wait a bit longer if it's a rate limit or cold start
-                    await asyncio.sleep(1.5 if is_rate_limit else 0.6)
+                    await asyncio.sleep(1.5 if is_rl else 0.6)
                     continue
                 last_exc = exc
                 break
 
         if last_exc is not None:
-            raw_len = sum(len(c) for c in raw_chunks)
-            logger.warning("llm_stream error model=%s finish=%s raw=%d: %s", model, finish_reason, raw_len, last_exc)
-            is_rate_limit = (
-                "429" in str(last_exc)
-                or getattr(last_exc, "status_code", None) == 429
-                or "ResourceExhausted" in str(last_exc)
-                or "resource_exhausted" in str(last_exc).lower()
-                or "overloaded" in str(last_exc).lower()
-                or "503" in str(last_exc)
-                or getattr(last_exc, "status_code", None) == 503
-            )
-            err_msg = "The model is currently overloaded — too many requests. Wait a moment then try again, or switch to another model." if is_rate_limit else str(last_exc)
+            logger.warning("llm_stream error model=%s finish=%s raw=%d: %s", model, finish_reason, sum(len(c) for c in raw_chunks), last_exc)
+            err_msg = "The model is currently overloaded — too many requests. Wait a moment then try again, or switch to another model." if _is_rate_limit(last_exc) else str(last_exc)
             yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
             return
 

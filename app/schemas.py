@@ -28,6 +28,11 @@ class UpdateSettingsBody(BaseModel):
     temperature: float | None = None
 
 
+class ImageAttachment(BaseModel):
+    name: str = "image"
+    dataUrl: str
+
+
 class DocumentAttachment(BaseModel):
     name: str
     text: str
@@ -36,8 +41,9 @@ class DocumentAttachment(BaseModel):
 class SendMessageBody(BaseModel):
     content: str = ""
     model: str | None = None
-    images: list[str] | None = None
+    images: list[str | ImageAttachment] | None = None
     documents: list[DocumentAttachment] | None = None
+
     web_search: bool = False
     client_time: str | None = None
     skip_user_save: bool = False

@@ -12,6 +12,7 @@ from .engines import _searxng_search, _ddg_search, _tavily_search, _FANDOM_ALLOW
 from .llm_processing import _rewrite_query, _rerank, _REGEX_INTENTS
 from .embedder import warmup_embedder
 from . import domain_trust
+
 _log = logging.getLogger(__name__)
 _cfg = load_config()
 
@@ -22,7 +23,7 @@ _warmup_done = asyncio.Event()
 
 
 async def warmup() -> None:
-    """Prime SearXNG, the browser, the local embedder, and the traffic-rank list concurrently."""
+    """Prime SearXNG, the browser, and the local embedder concurrently."""
     global _warmup_started
     _warmup_started = True
 
@@ -39,10 +40,10 @@ async def warmup() -> None:
         _warmup_searxng(),
         warmup_embedder(),
         warmup_jina(),
-        domain_trust.ensure_loaded(),
         return_exceptions=True,
     )
     _warmup_done.set()
+
 
 async def shutdown() -> None:
     await shutdown_engines()
@@ -59,10 +60,13 @@ async def _await_warmup() -> None:
 
 
 def _clean(results: list[dict]) -> list[dict]:
-    """Drop skip-listed domains before they win a race or waste a fetch slot."""
+    """Drop skip-listed, runtime-blocked, and trash-URL domains before they waste a fetch slot."""
     return [
         r for r in results
-        if r.get("url") and not skip(r["url"], _FANDOM_ALLOW)
+        if r.get("url")
+        and not skip(r["url"], _FANDOM_ALLOW)
+        and not domain_trust.is_runtime_blocked(r["url"])
+        and not domain_trust.is_trash_url(r["url"])
     ]
 
 
@@ -76,9 +80,8 @@ async def _staggered_search_cascade(
             return t
         return max(0.05, min(t, deadline - time.monotonic()))
 
-    t1 = _cap(0.75 if is_fallback else 1.0)
     searxng_task = asyncio.ensure_future(_searxng_search(searxng_q, max_results))
-    
+
     async def _ddg_with_timeout(timeout: float):
         try:
             return await asyncio.wait_for(
@@ -87,48 +90,50 @@ async def _staggered_search_cascade(
             )
         except asyncio.TimeoutError:
             return []
-            
-    ddg_task = None
-    tavily_task = None
-    
+
     # Phase 1: wait for SearXNG
+    t1 = _cap(0.75 if is_fallback else 1.0)
     done, pending = await asyncio.wait([searxng_task], timeout=t1)
     if searxng_task in done:
         res = _clean(searxng_task.result())
-        if res: return res, "SearXNG"
-    
+        if res:
+            return res, "SearXNG"
+
     # Phase 2: launch DDG
     t_ddg = _cap(3.0 if is_fallback else 6.0)
     ddg_task = asyncio.ensure_future(_ddg_with_timeout(t_ddg))
     pending = [t for t in (searxng_task, ddg_task) if not t.done()]
-    
+
+    task_names = {searxng_task: "SearXNG", ddg_task: "DuckDuckGo"}
+
     if pending:
         t2 = _cap(1.0 if is_fallback else 2.0)
         done, pending = await asyncio.wait(pending, timeout=t2, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             res = _clean(task.result())
             if res:
-                for p in pending: p.cancel()
-                return res, "SearXNG" if task == searxng_task else "DuckDuckGo"
-            
+                for p in pending:
+                    p.cancel()
+                return res, task_names.get(task, "DuckDuckGo")
+
     # Phase 3: launch Tavily
     tavily_task = asyncio.ensure_future(_tavily_search(searxng_q, max_results=max_results))
-    pending = [t for t in (searxng_task, ddg_task, tavily_task) if t and not t.done()]
-    
+    task_names[tavily_task] = "Tavily"
+    pending = [t for t in (searxng_task, ddg_task, tavily_task) if not t.done()]
+
     while pending:
-        phase3_timeout = _cap(4.0)
-        if phase3_timeout <= 0.05:
+        timeout = _cap(4.0)
+        if timeout <= 0.05:
             break
-        done, pending = await asyncio.wait(pending, timeout=phase3_timeout, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         if not done:
             break
         for task in done:
             res = _clean(task.result())
             if res:
-                for p in pending: p.cancel()
-                if task == searxng_task: return res, "SearXNG"
-                if task == ddg_task: return res, "DuckDuckGo"
-                return res, "Tavily"
+                for p in pending:
+                    p.cancel()
+                return res, task_names.get(task, "Tavily")
 
     for p in pending:
         p.cancel()
@@ -147,30 +152,23 @@ _inflight: "dict[tuple, asyncio.Future]" = {}
 async def _run_with_hard_timeout(
     query: str, num_urls: int, history_context: str, chat_id: str, cache_key: tuple
 ) -> tuple[str, dict]:
+    def _fail(extra: dict) -> tuple[str, dict]:
+        result = ("", {"site": "general", "intent": "general",
+                       "original_query": query, "rewritten_query": query,
+                       "query": query, "fallback": True,
+                       "engine": "", "sources": [], **extra})
+        _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
+        return result
     try:
         return await asyncio.wait_for(
             _fetch_web_context_inner(query, num_urls, history_context, chat_id), timeout=20.0
         )
     except asyncio.TimeoutError:
         _log.warning("fetch_web_context hard timeout reached for %r", query)
-        result = ("", {
-            "site": "general", "intent": "general",
-            "original_query": query, "rewritten_query": query,
-            "query": query, "fallback": True,
-            "engine": "", "sources": [], "timed_out": True
-        })
-        _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
-        return result
+        return _fail({"timed_out": True})
     except Exception:
         _log.exception("fetch_web_context unexpected error for %r", query)
-        result = ("", {
-            "site": "general", "intent": "general",
-            "original_query": query, "rewritten_query": query,
-            "query": query, "fallback": True,
-            "engine": "", "sources": [], "error": True
-        })
-        _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
-        return result
+        return _fail({"error": True})
 
 
 async def fetch_web_context(
@@ -203,24 +201,20 @@ async def fetch_web_context(
         if _inflight.get(cache_key) is fut:
             del _inflight[cache_key]
 
+
 async def _fetch_web_context_inner(
     query: str, num_urls: int = _MAX_URLS, history_context: str = "", chat_id: str = ""
 ) -> tuple[str, dict]:
     """Core pipeline: rewrite -> search -> rerank -> fetch -> assemble."""
     t_start = time.monotonic()
     deadline = t_start + 17.0  # Soft deadline, ~3s under the 20s hard ceiling
-
     cache_key = _make_cache_key(query, history_context, num_urls, chat_id)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        _log.debug("Cache hit for %r", query)
-        return cached
 
     t_rewrite_start = time.monotonic()
-    
     intent = None
     rewritten = query
     llm_entity = ""
+
     for pattern, pattern_intent in _REGEX_INTENTS:
         if pattern.search(query):
             intent = pattern_intent
@@ -239,57 +233,39 @@ async def _fetch_web_context_inner(
 
     t_rewrite = int((time.monotonic() - t_rewrite_start) * 1000)
 
-    # Skip year for wiki intent — factual queries are timeless
-    if intent == "wiki" or re.search(r"\b(19|20)\d{2}\b", rewritten):
-        year = ""
-    else:
-        year = str(datetime.now().year)
+    # Timeless queries: skip year suffix for wiki intent or explicit year
+    year = "" if (intent == "wiki" or re.search(r"\b(19|20)\d{2}\b", rewritten)) else str(datetime.now().year)
 
     site = None
     suffix = ""
-    wiki_entity = False
+    wiki_entity = (intent == "wiki")
 
     if intent == "documentation":
         suffix = "documentation"
-    elif intent == "opinion":
-        # Reddit heavily blocks scraping now (403s), so we don't lock to site:reddit.com
-        pass
     elif intent == "dictionary":
         site = "dictionary.cambridge.org"
 
-    seed: list[dict] = []
-
-    if intent == "wiki":
-        wiki_entity = True
-        
     if site or suffix:
-        parts = [p for p in (rewritten, suffix, year) if p]
-        search_query = " ".join(parts)
+        search_query = " ".join(p for p in (rewritten, suffix, year) if p)
     else:
-        parts = [rewritten, "wiki" if wiki_entity and not site else "", year]
-        search_query = " ".join(p for p in parts if p).strip()
+        search_query = " ".join(p for p in (rewritten, "wiki" if wiki_entity else "", year) if p).strip()
 
     searxng_q = f"site:{site} {search_query}" if site else search_query
-    
-    t_search_start = time.monotonic()
-    
-    # Over-request to compensate for downstream filtering
-    primary_pool = max(10, num_urls + 5)
-    fallback_pool = max(12, num_urls + 7)
 
-    found, engine_used = await _staggered_search_cascade(
+    t_search_start = time.monotonic()
+    # Over-request to compensate for pre-fetch URL filtering (is_trash_url, skip, etc.)
+    primary_pool = max(15, num_urls + 10)
+    fallback_pool = max(15, num_urls + 10)
+
+    results, engine_used = await _staggered_search_cascade(
         searxng_q, search_query, site, primary_pool, deadline=deadline
     )
-
-    seen = {r["url"] for r in seed}
-    results = seed + [r for r in found if r["url"] not in seen]
     used_fallback = False
 
-    # General fallback when site-scoped results are thin (only if budget remains)
+    # General fallback when site-scoped results are thin
     if len(results) < max(2, num_urls // 2) and (deadline - time.monotonic()) > 1.0:
         used_fallback = True
         seen = {r["url"] for r in results}
-        
         general, gen_engine = await _staggered_search_cascade(
             rewritten, rewritten, None, fallback_pool, is_fallback=True, deadline=deadline
         )
@@ -327,10 +303,9 @@ async def _fetch_web_context_inner(
             "about", "best", "top", "is", "are", "was", "were"
         }
         _words_raw = search_query.split()
-        # Multi-word anchor from consecutive capitalized spans
         _cap_spans: list[str] = []
         _current_span: list[str] = []
-        for i, w in enumerate(_words_raw):
+        for w in _words_raw:
             if w[:1].isupper() and w.lower() not in _noise_words and len(w) > 1:
                 _current_span.append(w.lower())
             else:
@@ -349,12 +324,10 @@ async def _fetch_web_context_inner(
             ]
             _anchor = max(_candidates, key=len, default="")
 
-    # Fuzzy anchor set: full anchor + individual words for abbreviation matching
     _anchor_words = set(_anchor.split()) if _anchor else set()
     _anchor_words.discard("")
 
     def _anchor_match(text: str) -> bool:
-        """Check if anchor (or any constituent word) appears in text."""
         tl = text.lower()
         if _anchor in tl:
             return True
@@ -369,12 +342,10 @@ async def _fetch_web_context_inner(
         if on_entity:
             debug["entity_dropped"] = len(results) - len(on_entity)
             results = on_entity
-        seed = [r for r in seed if _anchor_match(r["url"])]
 
     def _is_junk(url: str) -> bool:
         u = url.lower()
-        return any(ns in u for ns in
-                   ("category:", "talk:", "file:", "special:", "user:", "/category"))
+        return any(ns in u for ns in ("category:", "talk:", "file:", "special:", "user:", "/category"))
 
     def _priority(r: dict) -> tuple:
         url = r["url"].lower()
@@ -383,49 +354,44 @@ async def _fetch_web_context_inner(
         if _anchor and not _anchor_match(url):
             return (2, 0.0)
         base = 0 if ("wiki" in url or ".org" in url) else 1
-        # Within a tier, prefer high-trust domains and demote content farms.
-        return (base, -domain_trust.trust_multiplier(r["url"], _terms_set))
+        return (base, -domain_trust.trust_multiplier(r["url"]))
 
     # --- Relevance gate ---
-    _noise = {"wiki", "documentation", "reddit", "guide"}
     _terms = [
         w.lower() for w in search_query.split()
-        if len(w) > 3 and not w.isdigit() and w.lower() not in _noise
+        if len(w) > 3 and not w.isdigit() and w.lower() not in {"wiki", "documentation", "reddit", "guide"}
     ]
-    _terms_set = set(_terms)
     _threshold = max(1, len(_terms) // 3)
 
     def _relevant(content: str, score: float = 0.0) -> bool:
-        # High semantic score bypasses lexical check
-        if score > 0.6:
-            return True
-        if not _terms:
+        if score > 0.6 or not _terms:
             return True
         cl = content.lower()
         if _anchor and not _anchor_match(cl):
             return False
         return sum(t in cl for t in _terms) >= _threshold
 
-    def _is_youtube_watch(url: str) -> bool:
-        u = url.lower()
-        return "youtube.com/watch" in u or "youtu.be/" in u
-
     async def _fetch_one(r: dict) -> tuple[dict, str, str]:
-        # YouTube: use snippet directly instead of scraping JS-rendered page
-        if _is_youtube_watch(r["url"]):
+        if "youtube.com/watch" in r["url"].lower() or "youtu.be/" in r["url"].lower():
             title = (r.get("title") or "").strip()
             snip = (r.get("snippet") or "").strip()
-            content = f"Title: {title}\nDescription: {snip}"
-            return r, content, "snippet"
+            return r, f"Title: {title}\nDescription: {snip}", "snippet"
         content, method = await fetch_content(r["url"], r["snippet"])
         return r, content, method
 
     def _accept(r: dict, content: str, method: str) -> None:
         ok = bool(content.strip()) and _relevant(content, r.get("score", 0.0))
+        quality_reason = ""
+        if ok:
+            quality_ok, quality_reason = domain_trust.content_quality_ok(content, r["url"])
+            if not quality_ok:
+                ok = False
         debug["sources"].append({
             "url": r["url"], "method": method, "chars": len(content),
             "relevant": ok, "score": round(r.get("score", 0.0), 3),
+            "quality_reject": quality_reason or None,
         })
+        domain_trust.record_outcome(r["url"], ok)
         fetched.append((r, content, ok))
         if ok and len(parts) < num_urls:
             parts.append(f"Source: {r['url']}\n{content}")
@@ -435,59 +401,48 @@ async def _fetch_web_context_inner(
 
     # --- Semantic reranking ---
     t_rerank_start = time.monotonic()
-    
     rerank_timeout = max(0.5, min(2.5, deadline - time.monotonic()))
     debug["rerank_budget_ms"] = int(rerank_timeout * 1000)
+
     try:
         reranked_ok = await asyncio.wait_for(_rerank(rewritten, results), timeout=rerank_timeout)
         if not reranked_ok:
-            _log.debug("Semantic rerank returned False (embedder unavailable); using heuristic sort")
+            _log.debug("Semantic rerank returned False; using heuristic sort")
     except asyncio.TimeoutError:
         reranked_ok = False
-        _log.warning("Semantic rerank timed out after %.2fs budget; using heuristic sort", rerank_timeout)
+        _log.warning("Semantic rerank timed out after %.2fs; using heuristic sort", rerank_timeout)
 
-    _fetch_pool_size = num_urls + 3  # Wider pool for backfill headroom
+    _fetch_pool_size = num_urls + 3
 
     if reranked_ok:
         debug["rerank"] = "embed"
-        # Fold domain trust into semantic score to prioritize authoritative sources over SEO farms.
         for r in results:
-            r["score"] = r.get("score", 0.0) * domain_trust.trust_multiplier(r["url"], _terms_set)
-        _high_confidence = [r for r in results if r.get("score", 0.0) >= 0.5]
-        _low_confidence  = [r for r in results if r.get("score", 0.0) <  0.5]
-        # Keep low-scoring results as a fallback tail so the fetch pool stays
-        # populated even when DDG / Tavily results all score below the threshold.
-        _high_confidence.sort(key=lambda r: (_is_junk(r["url"]), -r.get("score", 0.0)))
-        _low_confidence.sort(key=lambda r:  (_is_junk(r["url"]), -r.get("score", 0.0)))
-        results = _high_confidence + _low_confidence
+            r["score"] = r.get("score", 0.0) * domain_trust.trust_multiplier(r["url"])
+        _high = [r for r in results if r.get("score", 0.0) >= 0.5]
+        _low = [r for r in results if r.get("score", 0.0) < 0.5]
+        _high.sort(key=lambda r: (_is_junk(r["url"]), -r.get("score", 0.0)))
+        _low.sort(key=lambda r: (_is_junk(r["url"]), -r.get("score", 0.0)))
+        results = _high + _low
     else:
         results.sort(key=_priority)
+
     debug["t_rerank"] = int((time.monotonic() - t_rerank_start) * 1000)
 
-    t_wave1_wait = 0.0
-    t_wave2_wait = 0.0
-    
     # --- Time-boxed fetch ---
-    fetch_tasks = {}
-    for r in results[:_fetch_pool_size]:
-        fetch_tasks[r["url"]] = asyncio.ensure_future(_fetch_one(r))
-
+    fetch_tasks = {r["url"]: asyncio.ensure_future(_fetch_one(r)) for r in results[:_fetch_pool_size]}
     pending = set(fetch_tasks.values())
     completed_fetches = {}
-    
+
     start_time = time.monotonic()
     budget = max(0.5, min(5.0, deadline - start_time))
-    
+
     while pending:
-        elapsed = time.monotonic() - start_time
-        remaining = budget - elapsed
+        remaining = budget - (time.monotonic() - start_time)
         if remaining <= 0:
             break
-            
         done, pending = await asyncio.wait(pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
         if not done:
             break
-            
         for task in done:
             try:
                 res_r, content, method = task.result()
@@ -505,14 +460,13 @@ async def _fetch_web_context_inner(
         task.cancel()
 
     t_wave1_wait = time.monotonic() - start_time
-    
+
     # Process fetches in semantic order
     for r in results:
         if len(parts) >= num_urls:
             break
-        url = r["url"]
-        if url in completed_fetches:
-            res_r, content, method = completed_fetches[url]
+        if r["url"] in completed_fetches:
+            res_r, content, method = completed_fetches[r["url"]]
             _accept(res_r, content, method)
 
     debug["t_fetch_wave1"] = int(t_wave1_wait * 1000)
@@ -525,7 +479,6 @@ async def _fetch_web_context_inner(
     # --- Degradation tiers: top up when tier 1 didn't fill quota ---
     if len(parts) < num_urls:
         got = {r["url"]: content for r, content, _ok in fetched}
-        # Tier 2: anchor match or high score (relaxed)
         for r in results[:_fetch_pool_size]:
             if len(parts) >= num_urls:
                 break
@@ -545,39 +498,22 @@ async def _fetch_web_context_inner(
                     _used_urls.add(url)
         if debug["tier2_anchor_rescue"] or debug["tier2_score_rescue"]:
             debug["degraded"] = "relaxed"
+
     if len(parts) < num_urls:
-        # Tier 3: snippets >= 40 chars
-        snips = [
-            (r, (r.get("snippet") or "").strip())
-            for r in results[:_fetch_pool_size] if r["url"] not in _used_urls
+        # Tier 3+4: snippet backfill — prefer entity matches, then any snippet/title
+        candidates = [
+            (r, (r.get("snippet") or r.get("title") or "").strip())
+            for r in results if r["url"] not in _used_urls
         ]
-        snips = [(r, s) for r, s in snips if len(s) >= 40]
-        on_entity = [(r, s) for r, s in snips if not _anchor or _anchor in s.lower() or r.get("score", 0.0) > 0.4]
-        _tier3_added = 0
-        for r, s in (on_entity or snips):
+        candidates = [(r, s) for r, s in candidates if len(s) >= 40]
+        on_entity = [(r, s) for r, s in candidates if not _anchor or _anchor in s.lower() or r.get("score", 0.0) > 0.4]
+        for r, s in (on_entity or candidates):
             if len(parts) >= num_urls:
                 break
             parts.append(f"Source: {r['url']}\n{s}")
             _used_urls.add(r["url"])
-            _tier3_added += 1
-        if _tier3_added:
+        if len(parts) > debug["tier1_count"] + debug["tier2_anchor_rescue"] + debug["tier2_score_rescue"]:
             debug["degraded"] = debug.get("degraded", "snippet")
-
-    if len(parts) < num_urls:
-        # Tier 4: any snippet or title available
-        _tier4_added = 0
-        for r in results:
-            if len(parts) >= num_urls:
-                break
-            if r["url"] in _used_urls:
-                continue
-            s = (r.get("snippet") or r.get("title") or "").strip()
-            if s:
-                parts.append(f"Source: {r['url']}\n{s}")
-                _used_urls.add(r["url"])
-                _tier4_added += 1
-        if _tier4_added:
-            debug["degraded"] = debug.get("degraded", "any_snippet")
 
     if not parts:
         result = ("", debug)
@@ -586,23 +522,18 @@ async def _fetch_web_context_inner(
 
     # Truncate to context window limit
     max_total_chars = 25000
-    truncated_parts = []
-    
-    # Distribute the budget evenly among the actual fetched parts
     chars_per_part = max_total_chars // max(1, len(parts))
-    
-    for p in parts:
-        if len(p) > chars_per_part:
-            truncated_parts.append(p[:chars_per_part] + "\n... [truncated to fit context window]")
-        else:
-            truncated_parts.append(p)
+    truncated_parts = [
+        p[:chars_per_part] + "\n... [truncated to fit context window]" if len(p) > chars_per_part else p
+        for p in parts
+    ]
 
     ctx = (
         "=== Web Search Results ===\n\n"
         + "\n\n---\n\n".join(truncated_parts)
         + "\n\n=== End of Web Results ==="
     )
-    
+
     debug["t_total"] = int((time.monotonic() - t_start) * 1000)
     _log.info(
         "Search stats for %r: rewrite=%dms, search=%dms, rerank=%dms, fetch=%dms, total=%dms | "
@@ -612,7 +543,7 @@ async def _fetch_web_context_inner(
         debug.get("tier1_count", 0), debug.get("tier2_anchor_rescue", 0),
         debug.get("tier2_score_rescue", 0), debug.get("entity_dropped", 0)
     )
-    
+
     result = (ctx, debug)
     _cache_set(cache_key, result)
     return result
@@ -622,7 +553,7 @@ def inject_web_context(messages: list[dict], web_ctx: str) -> None:
     """Append web context + citation instructions to the system message."""
     if not web_ctx:
         return
-    
+
     suffix = (
         f"\n\n{web_ctx}\n\n"
         "Use the search results above to answer accurately. "
@@ -631,7 +562,7 @@ def inject_web_context(messages: list[dict], web_ctx: str) -> None:
         "Do not fabricate information not found in the results.\n"
         "CRITICAL INSTRUCTION: You MUST reply in the exact same language as the user's latest query, even if the search results are in a different language."
     )
-    
+
     if messages and messages[0]["role"] == "system":
         messages[0]["content"] += suffix
     else:

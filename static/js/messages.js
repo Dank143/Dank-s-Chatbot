@@ -48,11 +48,16 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
   else if (msg.duo_side !== undefined) wrapper.dataset.duoSide = msg.duo_side;
 
   if (msg.role === 'user') {
+    if (msg.attachments) wrapper.dataset.attachments = typeof msg.attachments === 'string' ? msg.attachments : JSON.stringify(msg.attachments);
+
     const att = msg.attachments ? JSON.parse(msg.attachments) : {};
     const imgs = Array.isArray(att) ? att : (att.images || []);
     const docs = Array.isArray(att) ? [] : (att.documents || []);
     const imagesHtml = imgs.length
-      ? `<div class="msg-images">${imgs.map(src => `<img class="msg-image" src="${src}" alt="attachment">`).join('')}</div>`
+      ? `<div class="msg-images">${imgs.map(img => {
+          const src = typeof img === 'object' ? img.dataUrl : img;
+          return `<img class="msg-image" src="${src}" alt="attachment">`;
+        }).join('')}</div>`
       : '';
     const docsHtml = docs.length
       ? `<div class="msg-docs">${docs.map(d => {
@@ -283,7 +288,18 @@ export async function editMessage(btn) {
   bubbleClone.querySelector('.msg-docs')?.remove();
   const originalText = bubbleClone.textContent.trim();
 
-  const images = [...bubble.querySelectorAll('.msg-image')].map(img => img.src);
+  // Recover full image objects (with names) from the original message attachments
+  let origAtt = {};
+  try {
+    const rawAtt = wrapper.dataset.attachments;
+    if (rawAtt) origAtt = JSON.parse(rawAtt);
+  } catch (e) {}
+  const origImages = Array.isArray(origAtt) ? origAtt : (origAtt.images || []);
+  const images = origImages.map(img => {
+    if (typeof img === 'object' && img.dataUrl) return { name: img.name || 'image', dataUrl: img.dataUrl };
+    if (typeof img === 'string') return { name: 'image', dataUrl: img };
+    return null;
+  }).filter(Boolean);
   const docs = [...bubble.querySelectorAll('.msg-doc-chip[data-doc-key]')].map(chip => {
     const entry = _docStore.get(+chip.dataset.docKey);
     return entry ? { name: entry.name, text: entry.text } : null;
@@ -309,11 +325,11 @@ export async function editMessage(btn) {
   function renderEditAttachments() {
     if (!previewEl) return;
     previewEl.innerHTML = '';
-    images.forEach((src, i) => {
+    images.forEach((imgObj, i) => {
       const div = document.createElement('div');
       div.className = 'attachment-thumb';
       const img = document.createElement('img');
-      img.src = src; img.alt = '';
+      img.src = imgObj.dataUrl; img.alt = imgObj.name || '';
       const rm = document.createElement('button');
       rm.className = 'attachment-remove'; rm.title = 'Remove'; rm.textContent = '×';
       rm.onclick = () => { images.splice(i, 1); renderEditAttachments(); };

@@ -11,6 +11,7 @@ No paid APIs. Discovery uses self-hosted SearXNG and DuckDuckGo (via `ddgs`) plu
 | `pipeline.py` | Orchestration: rewrite → route → staggered search cascade → rerank → time-boxed fetch → assemble |
 | `engines.py` | Search engine integrations: SearXNG (primary), DuckDuckGo (secondary), Tavily (tertiary). |
 | `fetcher.py` | Content retrieval (Jina, trafilatura, MediaWiki, Native JSON APIs) + skip rules + host-fetcher caching. |
+| `domain_trust.py` | Trust scoring (tier multipliers), pre-fetch URL filtering (trash/spam gates), post-fetch content heuristics, and persistent runtime domain blocking. |
 | `llm_processing.py` | LLM-based query rewriting, intent classification, and semantic reranking using embeddings. |
 | `embedder.py` | Local semantic embeddings via fastembed (ONNX, CPU) — no external embedding API calls. |
 | `cache.py` | Simple in-memory caching layer for search results. |
@@ -41,12 +42,14 @@ query + history
    │  launched concurrently. If both fail, Tavily is called.
    │  If site-scoped results are < num_urls/2, a general fallback cascade runs.
    ▼
-[5] Merge Results
+[5] Pre-Fetch Filtering & Merge
    │  Merge API-discovered seed URLs + Search Cascade results, deduped.
+   │  Garbage SEO URLs (quote farms, keyword-stuffed slugs) are hard-blocked here.
    ▼
 [6] Semantic Reranking
    │  Query and result snippets are embedded locally using ONNX fastembed.
    │  Results are sorted by cosine similarity; junk pages are demoted.
+   │  Scores are multiplied by domain trust tiers (e.g. .edu gets 1.35x boost).
    ▼
 [7] Time-Boxed Hybrid Fetch Collection
    │  The top N+2 results are fetched concurrently.
@@ -90,8 +93,14 @@ Instead of blasting all engines simultaneously (which causes rate limits) or wai
 - **DuckDuckGo** starts if SearXNG doesn't respond within 2.0s (1.0s for fallbacks).
 - **Tavily** starts if both fail to return results.
 
-### [5] Semantic Reranking (`llm_processing.py` & `embedder.py`)
+### [5] Semantic Reranking & Trust Scoring (`llm_processing.py`, `embedder.py`, `domain_trust.py`)
 Results are reranked using semantic embeddings. A local ONNX embedding model runs in-process — no network round trip. This ensures results conceptually similar to the query bubble up, even if keywords mismatch (e.g. "voicelines" ≈ a page titled "Audio"). Junk meta pages (Category:, Talk:) are demoted.
+
+Final semantic scores are multiplied by a **Domain Trust Multiplier**:
+- **Tier 1 (Authoritative)**: e.g., wikipedia.org, .gov, .edu (1.35x boost)
+- **Tier 2 (Reputable)**: e.g., nytimes.com, github.com (1.12x boost)
+- **Suspicious/Free Hosts**: e.g., .xyz, blogspot.com (Penalized)
+- **Denylist**: Hard blocked (0.0 multiplier)
 
 ### [6] Time-Boxed Fetching (`fetcher.py` & `pipeline.py`)
 To prevent a single slow website from freezing the chatbot, `pipeline.py` uses a **Time-Boxed Hybrid Loop**. 
@@ -108,13 +117,16 @@ Fetch methods race or fallback gracefully:
 
 A per-host cache remembers which fetcher succeeded last time, avoiding redundant fallback attempts and saving significant latency.
 
-### [7] Tiered Acceptance
-To avoid returning an empty context, content goes through layered filters:
-1. **Strict**: Content must mention the anchor entity ≥3× and repeat half the query terms.
-2. **Relaxed**: Any on-entity full content (anchor present at all).
-3. **Snippet**: DDG snippets, preferring those that name the entity.
+### [7] Tiered Acceptance & Content Quality Gates
+To avoid returning an empty context or garbage SEO text, content goes through layered filters:
+1. **Content Quality Gate**: Fast post-fetch regex checks reject pages with extreme ad/affiliate-link density (>5 per 1000 chars), hidden quote-farm templates, or high repetition ratios.
+2. **Strict Relevance**: Content must mention the anchor entity ≥3× and repeat half the query terms.
+3. **Relaxed Relevance**: Any on-entity full content (anchor present at all).
+4. **Snippet Fallback**: DDG snippets, preferring those that name the entity.
 
-## Reliability Features
+## Reliability & Quality Features
+- **Zero-Latency Pre-Fetch Filtering**: `is_trash_url` uses fast regex to detect and drop SEO garbage (e.g., keyword-stuffed slugs, quote farms) *before* wasting network bandwidth or fetch slots on them.
+- **Runtime Domain Learning**: A persistent, disk-backed LRU cache (`.tranco_cache/domain_learning.json`) tracks fetch success ratios. Domains that fail 3 times consecutively are auto-blocked for increasing durations (exponential backoff), preventing the pipeline from repeatedly stalling on Cloudflare-heavy sites.
 - **Concurrent Provider Racing**: LLM rewrites race Ollama vs NIM, falling back seamlessly if one provider is down (note: embeddings now run safely locally).
 - **Hard Context Limits**: The final text is strictly truncated to 25,000 characters to protect the LLM context window.
 - **Shared Request Deadline**: A single soft deadline (~17s, under the 20s hard ceiling) is threaded through the search cascade, fallback cascade, semantic rerank, and fetch loop. Each stage clamps its own timeout against the remaining budget instead of assuming a fresh window, so a slow early stage shrinks — rather than blows past — the time left for later stages.

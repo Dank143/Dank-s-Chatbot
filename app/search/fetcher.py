@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import sys
 from collections import OrderedDict
 from urllib.parse import urlparse
 
@@ -270,25 +269,23 @@ _host_fetcher: "_BoundedLRU" = _BoundedLRU(maxsize=2000)  # host -> last-success
 
 
 async def _race(url: str, labels: list[str]) -> tuple[str, str]:
-    """Sequential fast fallback instead of concurrent race to save bandwidth."""
-    # Prioritize trafilatura (direct) over jina (proxy)
+    """Sequential fallback — try jina first (proxy bypasses Cloudflare), then others."""
     ordered = []
-    if "trafilatura" in labels: ordered.append("trafilatura")
-    if "mediawiki" in labels: ordered.append("mediawiki")
     if "jina" in labels: ordered.append("jina")
+    if "mediawiki" in labels: ordered.append("mediawiki")
+    if "trafilatura" in labels: ordered.append("trafilatura")
     for l in labels:
         if l not in ordered:
             ordered.append(l)
 
     for label in ordered:
         try:
-            # Short timeout for each attempt
             text = await asyncio.wait_for(_FETCHERS[label](url), timeout=3.5)
             if text:
                 return text, label
         except (Exception, asyncio.TimeoutError):
             continue
-            
+
     return "", ""
 
 

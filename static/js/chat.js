@@ -517,7 +517,7 @@ export function showWelcome() {
 // Collect input + attachments, create chat if needed, and stream the reply.
 export async function sendMessage() {
   const content = messageInput.value.trim();
-  const images = state.pendingFiles.filter(f => f.kind === 'image').map(f => f.dataUrl);
+  const images = state.pendingFiles.filter(f => f.kind === 'image').map(f => ({ name: f.name, dataUrl: f.dataUrl }));
   const documents = state.pendingFiles.filter(f => f.kind === 'document').map(f => ({ name: f.name, text: f.text }));
   if ((!content && images.length === 0 && documents.length === 0) || state.streaming) return;
 
@@ -701,6 +701,30 @@ export async function downloadChat(targetId) {
     for (const msg of chat.messages) {
       if (msg.role === 'user') {
         md += '## 👤 User\n\n';
+
+        // Show uploaded file names
+        if (msg.attachments) {
+          try {
+            const att = JSON.parse(msg.attachments);
+            const imgs = Array.isArray(att) ? att : (att.images || []);
+            const docs = Array.isArray(att) ? [] : (att.documents || []);
+            const fileNames = [];
+            imgs.forEach(img => {
+              if (typeof img === 'object' && img.name) {
+                fileNames.push(`🖼️ ${img.name}`);
+              } else if (typeof img === 'string') {
+                fileNames.push('🖼️ [image]');
+              }
+            });
+            docs.forEach(d => {
+              if (d.name) fileNames.push(`📄 ${d.name}`);
+            });
+            if (fileNames.length) {
+              md += '**Attachments:** ' + fileNames.join(', ') + '\n\n';
+            }
+          } catch (e) { /* ignore parse errors */ }
+        }
+
         md += msg.content + '\n\n';
       } else if (msg.role === 'assistant') {
         const modelName = msg.model || 'Assistant';

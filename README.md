@@ -4,9 +4,11 @@ A self-hosted AI chat interface powered by [NVIDIA NIM](https://build.nvidia.com
 
 ---
 
-## Demo Video
+## Demo
 
-![Demo Video](.demo/Demo.gif)
+<p align="center">
+  <img src=".demo/Demo.gif" alt="Demo">
+</p>
 
 ---
 

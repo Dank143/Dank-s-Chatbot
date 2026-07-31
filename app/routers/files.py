@@ -5,12 +5,26 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 router = APIRouter(prefix="/api")
 
 _MAX_DOC_CHARS =143_000
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """Read an upload incrementally while enforcing the in-memory size limit."""
+    chunks = []
+    total = 0
+    while chunk := await file.read(_UPLOAD_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > _MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
     """Extract plain text from an uploaded txt/pdf/pptx/docx/xlsx (capped length)."""
-    content = await file.read()
+    content = await _read_upload(file)
     filename = file.filename or "file"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
@@ -49,6 +63,7 @@ async def extract_text(file: UploadFile = File(...)):
                     if row_text.strip():
                         rows.append(row_text)
             text = "\n".join(rows)
+            wb.close()
 
         else:
             raise HTTPException(400, f"Unsupported file type: .{ext}")

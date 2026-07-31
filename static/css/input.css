@@ -41,9 +41,6 @@ textarea#messageInput {
   scrollbar-color: var(--border-input) transparent;
 }
 textarea#messageInput::placeholder { color: var(--text-sub); }
-textarea#messageInput::-webkit-scrollbar { width: 5px; }
-textarea#messageInput::-webkit-scrollbar-track { background: transparent; }
-textarea#messageInput::-webkit-scrollbar-thumb { background: var(--border-input); border-radius: 99px; }
 
 .input-actions {
   display: flex;
@@ -76,6 +73,7 @@ textarea#messageInput::-webkit-scrollbar-thumb { background: var(--border-input)
   height: 100%;
   object-fit: cover;
   display: block;
+  cursor: zoom-in;
 }
 .attachment-remove {
   position: absolute;
@@ -227,8 +225,8 @@ textarea#messageInput::-webkit-scrollbar-thumb { background: var(--border-input)
   color: var(--text);
 }
 .msg-doc-chip[data-doc-key] { cursor: pointer; }
-.msg-doc-chip[data-doc-key]:hover { background: var(--bg-active); }
 .attachment-doc.viewable { cursor: pointer; }
+.msg-doc-chip[data-doc-key]:hover,
 .attachment-doc.viewable:hover { background: var(--bg-active); }
 
 /* model selector button */

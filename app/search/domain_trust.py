@@ -9,59 +9,12 @@ from urllib.parse import urlparse
 _log = logging.getLogger(__name__)
 
 # Tier 1 — AUTHORITATIVE (×1.35)
-_TIER1_DOMAINS = frozenset({
-    "wikipedia.org", "wikidata.org", "wikisource.org", "wikiquote.org",
-    "britannica.com", "merriam-webster.com", "dictionary.cambridge.org",
-    "oxfordlearnersdictionaries.com",
-    "developer.mozilla.org", "docs.python.org", "docs.microsoft.com",
-    "learn.microsoft.com", "docs.oracle.com", "cppreference.com",
-    "devdocs.io", "man7.org",
-    "cloud.google.com", "docs.aws.amazon.com", "docs.github.com",
-    "kubernetes.io", "docs.docker.com", "docs.rust-lang.org",
-    "pypi.org", "npmjs.com", "crates.io", "packagist.org",
-    "github.com", "gitlab.com",
-    "stackoverflow.com", "stackexchange.com",
-    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk",
-    "npr.org", "pbs.org",
-    "pubmed.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov", "nih.gov",
-    "who.int", "cdc.gov", "nature.com", "science.org",
-    "thelancet.com", "nejm.org", "bmj.com",
-    "law.cornell.edu",
-    "sec.gov", "federalreserve.gov", "imf.org", "worldbank.org",
-    "fandom.com",
-    "react.dev", "nodejs.org", "vuejs.org", "angular.io",
-    "fastapi.tiangolo.com", "flask.palletsprojects.com",
-    "docs.djangoproject.com", "docs.sqlalchemy.org",
-    "pytorch.org", "tensorflow.org", "scikit-learn.org",
-    "numpy.org", "pandas.pydata.org",
-})
-
-_TIER1_SUFFIXES = (".gov", ".edu", ".ac.uk", ".ac.jp")
+_TIER1_SUFFIXES = (".gov", ".edu", ".org", "fandom.com", ".ac.uk", ".ac.jp", ".wiki")
 _TIER1_MULTIPLIER = 1.35
 
 
 # Tier 2 — REPUTABLE (×1.12)
-_TIER2_DOMAINS = frozenset({
-    "arstechnica.com", "wired.com", "theverge.com", "techcrunch.com",
-    "zdnet.com", "tomsguide.com", "tomshardware.com", "anandtech.com",
-    "howtogeek.com", "makeuseof.com", "lifehacker.com",
-    "news.ycombinator.com", "dev.to", "medium.com", "substack.com",
-    "css-tricks.com", "smashingmagazine.com", "web.dev",
-    "theguardian.com", "nytimes.com", "washingtonpost.com",
-    "economist.com", "ft.com", "time.com", "theatlantic.com",
-    "foreignpolicy.com",
-    "scientificamerican.com", "newscientist.com", "phys.org",
-    "nationalgeographic.com",
-    "reddit.com", "quora.com",
-    "bulbapedia.bulbagarden.net", "leagueoflegends.fandom.com",
-    "minecraft.wiki", "wiki.teamfortress.com",
-    "coursera.org", "khanacademy.org", "edx.org", "mit.edu",
-    "freecodecamp.org", "realpython.com",
-    "webmd.com", "mayoclinic.org", "healthline.com",
-    "investopedia.com", "bloomberg.com", "cnbc.com", "marketwatch.com",
-    "wolframalpha.com", "mathworld.wolfram.com",
-})
-
+_TIER2_SUFFIXES = (".net", ".io", ".dev", ".co.uk")
 _TIER2_MULTIPLIER = 1.12
 
 # Denylist — BLOCKED (score = 0.0)
@@ -133,14 +86,10 @@ def _registrable_domain(host: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 def _is_tier1(host: str) -> bool:
-    if any(host.endswith(suf) for suf in _TIER1_SUFFIXES):
-        return True
-    reg = _registrable_domain(host)
-    return reg in _TIER1_DOMAINS or host in _TIER1_DOMAINS
+    return any(host.endswith(suf) for suf in _TIER1_SUFFIXES)
 
 def _is_tier2(host: str) -> bool:
-    reg = _registrable_domain(host)
-    return reg in _TIER2_DOMAINS or host in _TIER2_DOMAINS
+    return any(host.endswith(suf) for suf in _TIER2_SUFFIXES)
 
 def _is_denied(host: str) -> bool:
     reg = _registrable_domain(host)

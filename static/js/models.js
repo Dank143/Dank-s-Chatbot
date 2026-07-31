@@ -1,4 +1,4 @@
-import { state, $, dropdownList, dropdownBackdrop, modelSearch, modelSelectorLbl, modelSelectorBtn, personaSelectorLbl, personaDropdownList, personaDropdownBackdrop, escHtml, setProvider, updateSendBtn } from './state.js';
+import { state, $, dropdownList, dropdownBackdrop, modelSearch, modelSelectorLbl, modelSelectorBtn, personaSelectorLbl, personaDropdownList, personaDropdownBackdrop, escHtml, setProvider, updateSendBtn, PROVIDERS, getProviderModels, getModelProvider, providerHasKey } from './state.js';
 import { api } from './api.js';
 
 const PROVIDER_NAMES = {
@@ -7,15 +7,21 @@ const PROVIDER_NAMES = {
   'meta': 'Meta', 'bytedance': 'ByteDance', 'stepfun-ai': 'StepFun AI',
   'deepseek-ai': 'DeepSeek AI', 'qwen': 'Qwen', 'nvidia': 'NVIDIA', 'z-ai': 'Z.ai',
 };
+const ICON_PROVIDER_NAMES = {
+  google: 'Google', cloudflare: 'Cloudflare Workers AI', deepseek: 'DeepSeek AI',
+  meta: 'Meta', minimax: 'MiniMax AI', mistral: 'Mistral AI', moonshot: 'Moonshot AI',
+  nvidia: 'NVIDIA', openai: 'OpenAI', qwen: 'Qwen', stepfun: 'StepFun AI',
+  zai: 'Z.ai', essentialai: 'Essential AI', bytedance: 'ByteDance', microsoft: 'Microsoft',
+};
 
 // Resolve a model object from any of the provider lists by its id.
 export function findModelById(id) {
   if (!id) return null;
-  return state.modelsNim?.find(m => m.id === id)
-      || state.modelsOllama?.find(m => m.id === id)
-      || state.modelsCloudflare?.find(m => m.id === id)
-      || state.models?.find(m => m.id === id)
-      || null;
+  for (const provider of PROVIDERS) {
+    const model = getProviderModels(provider).find((item) => item.id === id);
+    if (model) return model;
+  }
+  return null;
 }
 
 export function getProviderName(model) {
@@ -31,21 +37,8 @@ export function getProviderName(model) {
   }
 
   icon = icon.toLowerCase();
-  if (icon.includes('google')) return 'Google';
-  if (icon.includes('cloudflare')) return 'Cloudflare Workers AI';
-  if (icon.includes('deepseek')) return 'DeepSeek AI';
-  if (icon.includes('meta')) return 'Meta';
-  if (icon.includes('minimax')) return 'MiniMax AI';
-  if (icon.includes('mistral')) return 'Mistral AI';
-  if (icon.includes('moonshot')) return 'Moonshot AI';
-  if (icon.includes('nvidia')) return 'NVIDIA';
-  if (icon.includes('openai')) return 'OpenAI';
-  if (icon.includes('qwen')) return 'Qwen';
-  if (icon.includes('stepfun')) return 'StepFun AI';
-  if (icon.includes('zai')) return 'Z.ai';
-  if (icon.includes('essentialai')) return 'Essential AI';
-  if (icon.includes('bytedance')) return 'ByteDance';
-  if (icon.includes('microsoft')) return 'Microsoft';
+  const iconProvider = Object.entries(ICON_PROVIDER_NAMES).find(([key]) => icon.includes(key));
+  if (iconProvider) return iconProvider[1];
 
   const prefix = modelId.split('/')[0].split(':')[0].split('-')[0];
   return PROVIDER_NAMES[prefix] || prefix.replace(/\b\w/g, c => c.toUpperCase());
@@ -143,11 +136,8 @@ export function renderDropdownList(models) {
       const activeModel = state._pickingSlot === 'right' ? state.selectedModel2 : state.selectedModel;
       card.className = 'model-card' + (m.id === activeModel ? ' selected' : '');
 
-      const STAT_COLOR = '#0088FF';
-      const statColors = Array(10).fill(STAT_COLOR);
-
       const statBar = v => Array.from({ length: 10 }, (_, i) =>
-        `<span class="model-stat-seg${i < v ? ' filled' : ''}"${i < v ? ` style="background:${statColors[i]}"` : ''}></span>`).join('');
+        `<span class="model-stat-seg${i < v ? ' filled' : ''}"${i < v ? ' style="background:#0088FF"' : ''}></span>`).join('');
       const statLabel = k => k.charAt(0).toUpperCase() + k.slice(1);
       const statRows = m.stats ? Object.entries(m.stats).map(([k, v]) =>
         `<div class="model-stat-row"><span class="model-stat-label">${statLabel(k)}</span><div class="model-stat-bar">${statBar(v)}</div></div>`
@@ -177,36 +167,31 @@ export function selectModel(id) {
     return;
   }
   // Sync state.provider to whichever provider owns this model so the picker opens on the correct tab next time. 
-  const inNim = state.modelsNim?.some(m => m.id === id);
-  const inOllama = state.modelsOllama?.some(m => m.id === id);
-  const inCloudflare = state.modelsCloudflare?.some(m => m.id === id);
-  if (inNim && state.provider !== 'nim') setProvider('nim');
-  else if (inOllama && state.provider !== 'ollama') setProvider('ollama');
-  else if (inCloudflare && state.provider !== 'cloudflare') setProvider('cloudflare');
+  const provider = getModelProvider(id);
+  if (provider && provider !== state.provider) setProvider(provider);
   state.selectedModel = id;
   updateModelLabel();
   closeDropdown();
-  // Warm the newly selected model.
-  fetch('/api/warmup', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: id }),
-  }).catch(() => { });
-  if (state.activeChatId) {
-    api(`/chats/${state.activeChatId}`, { method: 'PATCH', body: { model: id } }).catch(() => { });
-  }
+  warmAndPersistModel('model', id);
 }
 
 export function selectModel2(id) {
   state.selectedModel2 = id;
   updateDuoModelLabel();
   closeDropdown();
-  // Warm the newly selected model.
+  warmAndPersistModel('model2', id);
+}
+
+function warmAndPersistModel(field, id) {
   fetch('/api/warmup', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: id }),
   }).catch(() => { });
   if (state.activeChatId) {
-    api(`/chats/${state.activeChatId}`, { method: 'PATCH', body: { model2: id } }).catch(() => { });
+    api(`/chats/${state.activeChatId}`, {
+      method: 'PATCH',
+      body: { [field]: id },
+    }).catch(() => { });
   }
 }
 
@@ -214,38 +199,23 @@ export function openDropdown() {
   dropdownBackdrop.style.display = 'flex';
   modelSearch.value = '';
   // Sync provider pill UI state for the picker
-  const hasKeyMap = {
-    'nim': state.hasKeyNim,
-    'ollama': state.hasKeyOllama,
-    'cloudflare': state.hasKeyCloudflare
-  };
-
   // When picking for the duo right slot, determine which provider the current
   // selectedModel2 belongs to and pre-select that provider's pill/list.
   let effectiveProvider = state.provider;
   if (state._pickingSlot === 'right' && state.selectedModel2) {
-    const inNim = state.modelsNim?.some(m => m.id === state.selectedModel2);
-    const inOllama = state.modelsOllama?.some(m => m.id === state.selectedModel2);
-    const inCloudflare = state.modelsCloudflare?.some(m => m.id === state.selectedModel2);
-    if (inNim) effectiveProvider = 'nim';
-    else if (inOllama) effectiveProvider = 'ollama';
-    else if (inCloudflare) effectiveProvider = 'cloudflare';
+    effectiveProvider = getModelProvider(state.selectedModel2) || effectiveProvider;
   }
 
   document.querySelectorAll('#pickerProviderPill .pill-opt').forEach(btn => {
     btn.classList.toggle('active', effectiveProvider && btn.dataset.provider === effectiveProvider);
 
     // Gray out/disable the pill toggle if the API key for that provider is blank
-    const prov = btn.dataset.provider;
-    btn.disabled = !hasKeyMap[prov];
+    btn.disabled = !providerHasKey(btn.dataset.provider);
   });
   setTimeout(() => modelSearch.focus(), 50);
 
   // Show the model list for the effective provider (may differ from state.provider for duo right slot).
-  const listToShow = effectiveProvider === 'nim' ? (state.modelsNim || [])
-                   : effectiveProvider === 'ollama' ? (state.modelsOllama || [])
-                   : state.models;
-  renderDropdownList(listToShow);
+  renderDropdownList(getProviderModels(effectiveProvider));
 }
 
 export function closeDropdown() {
@@ -253,7 +223,7 @@ export function closeDropdown() {
   state._pickingSlot = 'left';
 }
 
-export const emojiMap = {
+const emojiMap = {
   'default': '🤖',
   'unhinged': '🤪',
   'furious': '🤬',
@@ -355,13 +325,10 @@ export async function loadModels() {
   const hasCloudflare = state.hasKeyCloudflare;
 
   let initialProvider = state.provider;
-  const providerHasKey = (p) => p === 'nim' ? hasNim : p === 'ollama' ? hasOllama : p === 'cloudflare' ? hasCloudflare : false;
   if (!hasNim && !hasOllama && !hasCloudflare) {
     initialProvider = null;
   } else if (!providerHasKey(initialProvider)) {
-    if (hasNim) initialProvider = 'nim';
-    else if (hasOllama) initialProvider = 'ollama';
-    else if (hasCloudflare) initialProvider = 'cloudflare';
+    initialProvider = PROVIDERS.find(providerHasKey);
   }
 
   setProvider(initialProvider);

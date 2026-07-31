@@ -12,10 +12,10 @@ api_cloudflare:
   account_id: bbfd16b81a96771b6822c4df3f71cfaa
 
 defaults:
-  max_tokens: 12345
-  max_history_turns: 36
+  max_tokens: 15000
+  max_history_messages: 50
   max_search_urls: 5
-  temperature: 0.75
+  temperature: 0.5
   system_prompt: ""
 
 default_model_nim: openai/gpt-oss-120b

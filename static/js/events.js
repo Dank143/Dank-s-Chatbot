@@ -4,7 +4,7 @@ import {
   dropdownBackdrop, personaDropdownBackdrop, personaSelectorBtn, modelSearch, lightbox, lightboxImg,
   autoResize, updateSendBtn, setWebSearch, setProvider, scrollToBottom,
   collapsedNewChatBtn, collapsedStarBtn, collapsedRecentBtn,
-  duoToggleBtn, duoModelSelectorBtn, PROVIDER_UI_CONFIG
+  duoToggleBtn, duoModelSelectorBtn, PROVIDER_UI_CONFIG, getProviderModels
 } from './state.js';
 import { api } from './api.js';
 import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel, openPersonaDropdown, closePersonaDropdown } from './models.js';
@@ -18,6 +18,9 @@ import {
   sendMessage, showWelcome, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, downloadChat, closeContextMenu
 } from './chat.js';
 
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_PENDING_FILES = 10;
+
 function stopStreaming() {
   if (state.abortController) state.abortController.abort();
 }
@@ -30,6 +33,44 @@ function openLightbox(src) {
 function closeLightbox() {
   lightbox.style.display = 'none';
   lightboxImg.src = '';
+}
+
+async function addPendingFiles(files) {
+  for (const file of files) {
+    if (state.pendingFiles.length >= MAX_PENDING_FILES) break;
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      alert(`"${file.name}" exceeds the 25 MB limit.`);
+      continue;
+    }
+
+    if (isImageFile(file)) {
+      const dataUrl = await readFileAsDataUrl(file);
+      state.pendingFiles.push({ kind: 'image', name: file.name || 'pasted-image', dataUrl });
+      continue;
+    }
+
+    let text;
+    if (isTextFile(file)) {
+      text = await readFileAsText(file);
+    } else {
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const res = await fetch('/api/extract-text', { method: 'POST', body: form });
+        if (!res.ok) {
+          const error = await res.json();
+          alert(`Could not read "${file.name}": ${error.detail}`);
+          continue;
+        }
+        ({ text } = await res.json());
+      } catch {
+        alert(`Could not read "${file.name}"`);
+        continue;
+      }
+    }
+    state.pendingFiles.push({ kind: 'document', name: file.name, text });
+  }
+  renderPendingFiles();
 }
 
 export function setupEventListeners() {
@@ -101,11 +142,7 @@ export function setupEventListeners() {
       // left-slot model and state.provider remain unaffected.
       if (pill.id === 'pickerProviderPill' && state._pickingSlot === 'right') {
         pill.querySelectorAll('.pill-opt').forEach(b => b.classList.toggle('active', b === btn));
-        const listToShow = newProv === 'nim' ? (state.modelsNim || [])
-                         : newProv === 'ollama' ? (state.modelsOllama || [])
-                         : newProv === 'cloudflare' ? (state.modelsCloudflare || [])
-                         : [];
-        renderDropdownList(listToShow);
+        renderDropdownList(getProviderModels(newProv));
         return;
       }
 
@@ -150,32 +187,13 @@ export function setupEventListeners() {
   $('attachBtn').addEventListener('click', () => $('fileInput').click());
 
   $('fileInput').addEventListener('change', async () => {
-    const MAX = 10 * 1024 * 1024;
-    for (const file of $('fileInput').files) {
-      if (state.pendingFiles.length >= 10) break;
-      if (file.size > MAX) { alert(`"${file.name}" exceeds the 10 MB limit.`); continue; }
-
-      if (isImageFile(file)) {
-        const dataUrl = await readFileAsDataUrl(file);
-        state.pendingFiles.push({ kind: 'image', name: file.name, dataUrl });
-      } else {
-        let text;
-        if (isTextFile(file)) {
-          text = await readFileAsText(file);
-        } else {
-          const form = new FormData();
-          form.append('file', file);
-          try {
-            const res = await fetch('/api/extract-text', { method: 'POST', body: form });
-            if (!res.ok) { const e = await res.json(); alert(`Could not read "${file.name}": ${e.detail}`); continue; }
-            ({ text } = await res.json());
-          } catch { alert(`Could not read "${file.name}"`); continue; }
-        }
-        state.pendingFiles.push({ kind: 'document', name: file.name, text });
-      }
-    }
+    await addPendingFiles($('fileInput').files);
     $('fileInput').value = '';
-    renderPendingFiles();
+  });
+
+  $('attachmentPreviews').addEventListener('click', (e) => {
+    const image = e.target.closest('.attachment-thumb img');
+    if (image) openLightbox(image.src);
   });
 
   messagesEl.addEventListener('click', (e) => {
@@ -193,6 +211,16 @@ export function setupEventListeners() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeLightbox(); closeDocViewer(); } });
 
   messageInput.addEventListener('input', () => { autoResize(); updateSendBtn(); });
+  messageInput.addEventListener('paste', async (e) => {
+    const images = Array.from(e.clipboardData?.items || [])
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter(Boolean);
+    if (!images.length) return;
+
+    e.preventDefault();
+    await addPendingFiles(images);
+  });
   messageInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
@@ -240,10 +268,7 @@ export function setupEventListeners() {
     if (state._pickingSlot === 'right') {
       const activePill = document.querySelector('#pickerProviderPill .pill-opt.active');
       const activeProv = activePill?.dataset?.provider;
-      sourceList = activeProv === 'nim' ? (state.modelsNim || [])
-                 : activeProv === 'ollama' ? (state.modelsOllama || [])
-                 : activeProv === 'cloudflare' ? (state.modelsCloudflare || [])
-                 : state.models;
+      sourceList = getProviderModels(activeProv);
     } else {
       sourceList = state.models;
     }
@@ -255,6 +280,9 @@ export function setupEventListeners() {
 
   $('settingsCloseBtn').addEventListener('click', closeSettings);
   $('settingsCancelBtn').addEventListener('click', closeSettings);
+  $('settingsBackdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeSettings();
+  });
   $('settingsSaveBtn').addEventListener('click', saveSettings);
   $('apiKeyInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('verifyKeyBtn').click(); }
@@ -267,7 +295,7 @@ export function setupEventListeners() {
     const show = input.type === 'password';
     if (show && input.dataset.sentinel) {
       try {
-        const data = await api(`/settings?provider=${state.provider}`);
+        const data = await api(`/settings?provider=${state.provider}&reveal_key=1`);
         if (data.key) { input.value = data.key; delete input.dataset.sentinel; }
       } catch { /* keep sentinel */ }
     }
@@ -319,7 +347,7 @@ export function setupEventListeners() {
       if (config.showAccountId) body.account_id = accountId;
       if (key) body.key = key;
       else {
-        const cur = await api(`/settings?provider=${state.provider}`);
+        const cur = await api(`/settings?provider=${state.provider}&reveal_key=1`);
         body.key = cur.key;
       }
       const res = await fetch('/api/verify-key', {

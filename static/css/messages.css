@@ -20,15 +20,6 @@
   width: 10px;
 }
 
-.messages::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.messages::-webkit-scrollbar-thumb {
-  background: var(--border-input);
-  border-radius: 99px;
-}
-
 .message-wrapper {
   width: 100%;
   max-width: 842px;
@@ -72,20 +63,6 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 2px;
-}
-
-.assistant-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 .model-tag {
@@ -136,12 +113,15 @@ html.light .model-tag {
 }
 
 .bubble ul,
-.bubble ol {
+.bubble ol,
+.think-content ul,
+.think-content ol {
   padding-left: 1.4em;
   margin: .4em 0;
 }
 
-.bubble li {
+.bubble li,
+.think-content li {
   margin: .2em 0;
 }
 
@@ -555,11 +535,6 @@ html.light .model-tag {
   display: none;
 }
 
-/* Expanded state — content visible, chevron points down */
-.think-block.expanded .think-content {
-  display: block;
-}
-
 .think-block.streaming .think-chevron {
   animation: think-pulse 1.4s ease-in-out infinite;
 }
@@ -593,15 +568,6 @@ html.light .model-tag {
   width: 4px;
 }
 
-.think-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.think-content::-webkit-scrollbar-thumb {
-  background: var(--border-input);
-  border-radius: 99px;
-}
-
 /* Markdown inside think-content */
 .think-content p {
   margin: 0 0 0.5em;
@@ -609,16 +575,6 @@ html.light .model-tag {
 
 .think-content p:last-child {
   margin-bottom: 0;
-}
-
-.think-content ul,
-.think-content ol {
-  padding-left: 1.4em;
-  margin: .4em 0;
-}
-
-.think-content li {
-  margin: .2em 0;
 }
 
 .think-content code:not([class]) {

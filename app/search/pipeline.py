@@ -520,12 +520,16 @@ async def _fetch_web_context_inner(
         _cache_set(cache_key, result, ttl=_NEGATIVE_CACHE_TTL)
         return result
 
-    # Truncate to context window limit
-    max_total_chars = 25000
-    chars_per_part = max_total_chars // max(1, len(parts))
+    # Truncate to context window limit with weighted budget: top 3 get 30% each, rest get 5% each.
+    max_total_chars = 40000
+    _weights = [0.30, 0.30, 0.30, 0.05, 0.05]
+    _w = _weights[:len(parts)]
+    # Normalize in case we have fewer than 5 parts (e.g. 2 parts → 0.30+0.30 → scale to 1.0)
+    _w_sum = sum(_w)
+    _budgets = [int(max_total_chars * (w / _w_sum)) for w in _w]
     truncated_parts = [
-        p[:chars_per_part] + "\n... [truncated to fit context window]" if len(p) > chars_per_part else p
-        for p in parts
+        p[:cap] + "\n... [truncated to fit context window]" if len(p) > cap else p
+        for p, cap in zip(parts, _budgets)
     ]
 
     ctx = (

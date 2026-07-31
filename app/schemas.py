@@ -1,7 +1,12 @@
 from pydantic import BaseModel
 
 
-class CreateChatBody(BaseModel):
+class ApiRequest(BaseModel):
+    """Base class for public API request payloads."""
+
+
+class CreateChatBody(ApiRequest):
+    """Payload used to create a conversation."""
     title: str = "New Chat"
     model: str | None = None
     model2: str | None = None
@@ -10,7 +15,8 @@ class CreateChatBody(BaseModel):
     persona2: str | None = None
 
 
-class UpdateChatBody(BaseModel):
+class UpdateChatBody(ApiRequest):
+    """Fields that may be changed on an existing conversation."""
     title: str | None = None
     model: str | None = None
     model2: str | None = None
@@ -20,7 +26,8 @@ class UpdateChatBody(BaseModel):
     persona2: str | None = None
 
 
-class UpdateSettingsBody(BaseModel):
+class UpdateSettingsBody(ApiRequest):
+    """Provider connection settings supplied by the settings UI."""
     provider: str = "nim"
     key: str | None = None
     base_url: str | None = None
@@ -28,17 +35,20 @@ class UpdateSettingsBody(BaseModel):
     temperature: float | None = None
 
 
-class ImageAttachment(BaseModel):
+class ImageAttachment(ApiRequest):
+    """An inline image sent as a data URL."""
     name: str = "image"
     dataUrl: str
 
 
-class DocumentAttachment(BaseModel):
+class DocumentAttachment(ApiRequest):
+    """Extracted text from an uploaded document."""
     name: str
     text: str
 
 
-class SendMessageBody(BaseModel):
+class SendMessageBody(ApiRequest):
+    """Payload for a streamed assistant response."""
     content: str = ""
     model: str | None = None
     images: list[str | ImageAttachment] | None = None
@@ -51,12 +61,14 @@ class SendMessageBody(BaseModel):
     persona: str | None = None
 
 
-class SaveAssistantBody(BaseModel):
+class SaveAssistantBody(ApiRequest):
+    """Payload used to persist a client-stopped assistant response."""
     content: str
     timing_data: str | None = None
 
 
-class RegenerateBody(BaseModel):
+class RegenerateBody(ApiRequest):
+    """Options used to regenerate an assistant response."""
     model: str | None = None
     web_search: bool = False
     client_time: str | None = None
@@ -65,12 +77,14 @@ class RegenerateBody(BaseModel):
     persona: str | None = None
 
 
-class VerifyKeyBody(BaseModel):
+class VerifyKeyBody(ApiRequest):
+    """Provider credentials to validate without persisting them."""
     provider: str = "nim"
     key: str
     base_url: str
     account_id: str | None = None
 
 
-class WarmupBody(BaseModel):
+class WarmupBody(ApiRequest):
+    """Optional model selection for a warm-up request."""
     model: str | None = None

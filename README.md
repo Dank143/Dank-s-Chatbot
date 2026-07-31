@@ -25,13 +25,13 @@ A self-hosted AI chat interface powered by [NVIDIA NIM](https://build.nvidia.com
 - **Markdown + math** — rendered via marked.js, highlight.js, and KaTeX (LaTeX math blocks)
 - **Edit & retry** — inline-edit any user message; retry the last assistant response
 - **Copy & download** — copy button on messages and code blocks; download button on code blocks
-- **Image attachments** — attach images inline; passed as base64 to vision-capable models
-- **Document attachments** — attach PDF, DOCX, PPTX, XLSX, or plain text files; text is extracted and sent as context (up to 120 000 chars)
+- **Image attachments** — attach images or paste copied pictures and screenshots directly into the input; passed as base64 to vision-capable models
+- **Document attachments** — attach PDF, DOCX, PPTX, XLSX, or plain text files (25 MB maximum); text is extracted and sent as context (up to 143 000 chars)
 - **Web search** — globe toggle enables live search via SearXNG cascade (fallback to DuckDuckGo/Tavily) + Jina Reader / Trafilatura; semantic reranking via local ONNX embeddings (`fastembed`); auto-triggers on search-intent phrases; per-chat state in `localStorage`
 - **Dark / light theme** toggle, persisted in `localStorage`
 - **Settings modal** — configure API key, base URL, generation temperature, and UI behaviors (like auto-scrolling); key verification built in
 - **Voice input** — microphone button for hands-free message dictation via the Web Speech API
-- **Config-driven architecture** — add/remove models, background tasks (titles, query rewrites, embeddings), and API config entirely in `models.yaml`, no code changes needed
+- **Config-driven architecture** — add/remove models, background tasks (titles, query rewrites, embeddings), and API config entirely in `config.yaml`, no code changes needed
 - **Model warmup** — keeps the selected model warm to avoid cold-start delays
 - **Optimized pipeline** — reuses HTTP/2 connection pools and caches prompts/personas for minimal Time-To-First-Token latency
 - **Auto-opens** the most recently updated chat on page load
@@ -41,28 +41,35 @@ A self-hosted AI chat interface powered by [NVIDIA NIM](https://build.nvidia.com
 ## Project Structure
 
 ```
-Chatbot/
-├── main.py              # FastAPI app entry point, router registration
-├── config.py            # models.yaml loading and helpers
-├── database.py          # SQLite init and connection helper
-├── llm.py               # LLM stream wrapper, think-tag filter, creator guard
-├── schemas.py           # Pydantic request/response models
-├── models.yaml          # Model lists (NIM, Ollama, Cloudflare), API config, defaults
-├── .system_prompt       # Optional system prompt override (plain text)
-├── personas/            # Text files defining available dynamic personas
-├── searxng/             # SearXNG local configuration
+Dank's Chatbot/
+├── app/
+│   ├── main.py          # FastAPI app entry point, router registration
+│   ├── config.py        # config.yaml loading, environment overrides, personas
+│   ├── database.py      # SQLite initialization, migrations, and helpers
+│   ├── llm.py           # LLM client/stream wrapper and message construction
+│   ├── schemas.py       # Pydantic request/response models
+│   ├── routers/
+│   │   ├── chats.py     # Chat CRUD (create, list, get, update, delete)
+│   │   ├── messages.py  # SSE streaming, regeneration, and title generation
+│   │   ├── files.py     # Document text extraction endpoint
+│   │   └── settings.py  # Models, settings, warmup, and key verification
+│   └── search/
+│       ├── pipeline.py        # Search orchestration and context assembly
+│       ├── engines.py         # SearXNG, DuckDuckGo, and Tavily integrations
+│       ├── fetcher.py         # Page-content retrieval and extraction
+│       ├── llm_processing.py  # Query rewriting and semantic reranking
+│       ├── embedder.py        # Local fastembed/ONNX embeddings
+│       ├── domain_trust.py    # URL/content quality and trust scoring
+│       ├── cache.py           # In-memory search caching
+│       └── README.md          # Detailed search-pipeline documentation
+├── config.yaml          # Model lists, API configuration, and defaults
+├── .system_prompt       # Optional system-prompt override (plain text)
+├── personas/            # Text files defining dynamic personas
+├── searxng/             # Local SearXNG configuration
 ├── docker-compose.yml   # Docker setup for local SearXNG
 ├── requirements.txt
-├── icon/                # Provider icon PNGs served at /icon/*
-├── search/
-│   ├── fetcher.py       # Page fetching (Jina, Trafilatura)
-│   ├── pipeline.py      # Query rewrite, DDG search, rerank, context assembly
-│   └── README.md        # Detailed documentation for the search pipeline
-├── routers/
-│   ├── chats.py         # Chat CRUD (create, list, get, update, delete)
-│   ├── messages.py      # SSE message streaming, regenerate, title gen
-│   ├── files.py         # Document text extraction endpoint
-│   └── settings.py      # Models, settings, warmup, and key-verify endpoints
+├── icon/                # Provider icons served at /icon/*
+├── chatbot.db           # Local SQLite chat database (created at runtime)
 └── static/
     ├── index.html
     ├── css/              # Stylesheets
@@ -87,7 +94,9 @@ Chatbot/
         ├── markdown.js   # Marked + highlight.js + KaTeX rendering
         ├── settings.js   # Settings modal
         ├── speech.js     # Voice input via Web Speech API
-        └── theme.js      # Dark/light theme toggle
+        ├── theme.js      # Dark/light theme toggle
+        ├── icons.js      # Shared inline SVG icons
+        └── preload.js    # Startup resource preloading
 ```
 
 ---
@@ -130,7 +139,7 @@ For local Ollama without authentication, just set the base URL to `http://localh
 
 **4. (Optional) Set a system prompt or customize personas**
 
-Create a `.system_prompt` file in the project root and write your prompt as plain text. If the file exists it overrides the `system_prompt` field in `models.yaml`. You can also add `.txt` files to the `personas/` directory to create new dynamic personas available in the UI.
+Create a `.system_prompt` file in the project root and write your prompt as plain text. If the file exists it overrides the `system_prompt` field in `config.yaml`. You can also add `.txt` files to the `personas/` directory to create new dynamic personas available in the UI.
 
 **5. (Optional) Start Local SearXNG**
 
@@ -142,7 +151,7 @@ docker-compose up -d
 **6. Run the server**
 
 ```bash
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 Open [http://localhost:8000](http://localhost:8000) in your browser.
@@ -163,9 +172,9 @@ TAVILY_API_KEY=...          # optional
 
 Environment variables `NVIDIA_BASE_URL`, `OLLAMA_BASE_URL` / `OLLAMA_HOST`, `CLOUDFLARE_BASE_URL`, and `CLOUDFLARE_ACCOUNT_ID` can also override settings.
 
-**`.system_prompt`** — plain text system prompt (optional). Overrides `system_prompt` in `models.yaml` when present. Edit any time — picked up within 5 seconds, no restart needed.
+**`.system_prompt`** — plain text system prompt (optional). Overrides `system_prompt` in `config.yaml` when present. Edit any time — picked up within 5 seconds, no restart needed.
 
-**`models.yaml`** — everything else:
+**`config.yaml`** — everything else:
 
 ```yaml
 api_nim:
@@ -182,8 +191,8 @@ api_cloudflare:
   account_id: ""              # overridden by CLOUDFLARE_ACCOUNT_ID env var
 
 defaults:
-  max_tokens: 10000           # hard cap on output tokens
-  max_history_turns: 50       # messages kept per conversation
+  max_tokens: 15000           # hard cap on output tokens
+  max_history_messages: 50    # most recent message records passed to the model
   max_search_urls: 5          # URLs fetched per web search
   temperature: 0.5            # 0 = deterministic, 1 = creative
   system_prompt: ""           # fallback if .system_prompt file absent
@@ -235,7 +244,7 @@ Click the globe icon (🌐) in the input toolbar to toggle web search for the cu
 Web search also **auto-triggers** when the message contains high-confidence search-intent patterns — phrases like "latest news on", "what's happening with", "update on", "what happened to", "who won", "current score", etc. This can be enabled in settings.
 
 When triggered, the backend:
-1. **Rewrites** the user message into a standalone search query. Uses a regex fast-path for obvious intents (media, documentation, dictionary, opinion) to skip the LLM overhead. For complex queries, uses a fast LLM (races Ollama and NIM via `models.yaml` config) to resolve pronouns and determine intent.
+1. **Rewrites** the user message into a standalone search query. Uses a regex fast-path for obvious intents (media, documentation, dictionary, opinion) to skip the LLM overhead. For complex queries, uses a fast LLM (races Ollama and NIM via `config.yaml`) to resolve pronouns and determine intent.
 2. **Routes** to the best source based on intent: YouTube (media), documentation, or auto-discovered entity wikis (Wikipedia, Fandom, game wikis)
 3. **Queries Engines**: Uses a staggered cascade, triggering local SearXNG -> DuckDuckGo -> Tavily API sequentially to ensure fast results while falling back gracefully.
 4. **Fetches page content** by racing fetchers per URL (first success wins): [Jina Reader](https://jina.ai/reader/) or Trafilatura; per-host caching avoids re-probing failed fetchers
@@ -261,7 +270,7 @@ Cloudflare-blocked pages (e.g. Reddit) use Patchright (a stealth fork of Playwri
 | `POST` | `/api/chats` | Create a new chat |
 | `GET` | `/api/chats/{id}` | Get chat with full message history |
 | `PATCH` | `/api/chats/{id}` | Update title, model, or starred status |
-| `DELETE` | `/api/chats/{id}` | Delete a chat and all usually messages |
+| `DELETE` | `/api/chats/{id}` | Delete a chat and all of its messages |
 | `POST` | `/api/chats/{id}/messages` | Send a user message and stream the response (SSE) |
 | `POST` | `/api/chats/{id}/messages/assistant` | Save a partial assistant message (used by stop) |
 | `DELETE` | `/api/chats/{id}/messages/from/{msg_id}` | Delete a message and all subsequent ones |
@@ -304,7 +313,7 @@ data: {"type": "error",        "message": "..."}                       # error d
 
 ## Using a Different Provider
 
-Any OpenAI-compatible endpoint works. Update the relevant section in `models.yaml`:
+Any OpenAI-compatible endpoint works. Update the relevant section in `config.yaml`:
 
 ```yaml
 api_nim:

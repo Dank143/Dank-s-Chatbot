@@ -3,17 +3,17 @@ import {
   messagesEl, welcomeEl, inputAreaEl, messageInput,
   chatTitleDisplay, renameBtn,
   starredList, recentList, starredLabel, recentsLabel, sidebar,
-  escHtml, autoResize, updateSendBtn, setWebSearch, needsWebSearch,
-  clientTime, beginStreaming, endStreaming, setProvider,
+  escHtml, autoResize, updateSendBtn, setWebSearch,
+  beginStreaming, endStreaming, setProvider,
   downloadBtn, topStarBtn,
   duoToggleBtn, duoModelSelectorBtn, duoModelSep,
-  collapsedStarList, collapsedRecentList
+  collapsedStarList, collapsedRecentList,
+  PROVIDERS, getModelProvider, providerHasKey,
 } from './state.js';
 import { api } from './api.js';
 import { clearPendingFiles } from './files.js';
 import { updateModelLabel, updateDuoModelLabel, updatePersonaLabel } from './models.js';
-import { appendMessage, injectRetryDuoButton } from './messages.js';
-import { streamAssistant } from './stream.js';
+import { appendMessage, injectRetryDuoButton, streamNewMessage } from './messages.js';
 
 const GREETINGS = [
   'Hello there!', "What's up?", 'Greetings!', 'Good to see you!',
@@ -301,36 +301,15 @@ export async function openChat(chatId) {
 
   const chat = await api(`/chats/${chatId}`);
 
-  const hasNim = state.hasKeyNim;
-  const hasOllama = state.hasKeyOllama;
-  const bothAvailable = hasNim && hasOllama;
-  const onlyNim = hasNim && !hasOllama;
-  const onlyOllama = !hasNim && hasOllama;
-
   let targetModel = chat.model || state.defaultModel;
-
-  if (bothAvailable && targetModel) {
-    const isNimModel = state.modelsNim?.some(m => m.id === targetModel);
-    const isOllamaModel = state.modelsOllama?.some(m => m.id === targetModel);
-    if (isNimModel && state.provider !== 'nim') {
-      setProvider('nim');
-    } else if (isOllamaModel && state.provider !== 'ollama') {
-      setProvider('ollama');
-    }
-  } else if (onlyNim) {
-    setProvider('nim');
-    const isNimModel = state.modelsNim?.some(m => m.id === targetModel);
-    if (!isNimModel) {
-      targetModel = state.defaultModelNim;
-      api(`/chats/${chatId}`, { method: 'PATCH', body: { model: targetModel } }).catch(() => {});
-    }
-  } else if (onlyOllama) {
-    setProvider('ollama');
-    const isOllamaModel = state.modelsOllama?.some(m => m.id === targetModel);
-    if (!isOllamaModel) {
-      targetModel = state.defaultModelOllama;
-      api(`/chats/${chatId}`, { method: 'PATCH', body: { model: targetModel } }).catch(() => {});
-    }
+  const availableProviders = PROVIDERS.filter(providerHasKey);
+  const modelProvider = getModelProvider(targetModel);
+  if (modelProvider && availableProviders.includes(modelProvider)) {
+    setProvider(modelProvider);
+  } else if (availableProviders.length) {
+    setProvider(availableProviders[0]);
+    targetModel = state.defaultModel;
+    api(`/chats/${chatId}`, { method: 'PATCH', body: { model: targetModel } }).catch(() => {});
   }
 
   state.selectedModel = targetModel;
@@ -445,10 +424,8 @@ export async function openChat(chatId) {
   // Also sync state.provider so the picker opens on the correct NIM/Ollama tab.
   if (lastModel1) {
     state.selectedModel = lastModel1;
-    const inNim = state.modelsNim?.some(m => m.id === lastModel1);
-    const inOllama = state.modelsOllama?.some(m => m.id === lastModel1);
-    if (inNim && state.provider !== 'nim') setProvider('nim');
-    else if (inOllama && state.provider !== 'ollama') setProvider('ollama');
+    const provider = getModelProvider(lastModel1);
+    if (provider && provider !== state.provider) setProvider(provider);
     // Re-apply the correct selected model because setProvider may have reset it.
     state.selectedModel = lastModel1;
     updateModelLabel();
@@ -478,18 +455,9 @@ export async function createNewChat() {
 export function showWelcome() {
   state.activeChatId = null;
   
-  const hasNim = state.hasKeyNim;
-  const hasOllama = state.hasKeyOllama;
-  
-  if (hasNim) {
-    setProvider('nim');
-    state.selectedModel = state.defaultModelNim;
-  } else if (hasOllama) {
-    setProvider('ollama');
-    state.selectedModel = state.defaultModelOllama;
-  } else {
-    state.selectedModel = state.defaultModel;
-  }
+  const provider = PROVIDERS.find(providerHasKey);
+  if (provider) setProvider(provider);
+  state.selectedModel = state.defaultModel;
   
   state.duoMode = false;
   document.querySelector('.main').classList.toggle('duo-mode', false);
@@ -530,61 +498,7 @@ export async function sendMessage() {
   clearPendingFiles();
   beginStreaming();
 
-  const attJson = (images.length || documents.length)
-    ? JSON.stringify({ images, documents })
-    : null;
-
-  if (state.duoMode && state.selectedModel2) {
-    // ── Duo mode: stream both models in parallel ──
-    const userWrapper = appendMessage({ role: 'user', content, attachments: attJson });
-    userWrapper.classList.add('duo');
-    const row = document.createElement('div');
-    row.className = 'duo-message-row';
-    messagesEl.appendChild(row);
-
-    const asstWrapperL = appendMessage({ role: 'assistant', content: '', model: state.selectedModel }, true, row, 0);
-    const asstWrapperR = appendMessage({ role: 'assistant', content: '', model: state.selectedModel2 }, true, row, 1);
-
-    const bodyBase = {
-      content,
-      images: images.length ? images : undefined,
-      documents: documents.length ? documents : undefined,
-      web_search: state.webSearch || needsWebSearch(content) || undefined,
-      client_time: clientTime(),
-      persona: state.selectedPersona,
-    };
-
-    await Promise.allSettled([
-      streamAssistant(
-        `/api/chats/${state.activeChatId}/messages`,
-        { ...bodyBase, model: state.selectedModel, duo_side: 0 },
-        userWrapper, asstWrapperL
-      ),
-      streamAssistant(
-        `/api/chats/${state.activeChatId}/messages`,
-        { ...bodyBase, model: state.selectedModel2, skip_user_save: true, duo_side: 1 },
-        null, asstWrapperR
-      ),
-    ]);
-
-    injectRetryDuoButton(row);
-  } else {
-    // ── Normal single-model path ──
-    const userWrapper = appendMessage({ role: 'user', content, attachments: attJson });
-    const assistantWrapper = appendMessage({ role: 'assistant', content: '', model: state.selectedModel }, true);
-
-    await streamAssistant(
-      `/api/chats/${state.activeChatId}/messages`,
-      { content, model: state.selectedModel,
-        images: images.length ? images : undefined,
-        documents: documents.length ? documents : undefined,
-        web_search: state.webSearch || needsWebSearch(content) || undefined,
-        client_time: clientTime(),
-        persona: state.selectedPersona },
-      userWrapper,
-      assistantWrapper
-    );
-  }
+  await streamNewMessage(content, images, documents);
 
   endStreaming();
   updateSendBtn();

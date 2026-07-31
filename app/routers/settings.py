@@ -21,6 +21,12 @@ router = APIRouter(prefix="/api")
 # pings actually re-warm instead of being throttled.
 _last_warmup: dict[str, float] = {}
 _WARMUP_TTL = 230
+_PERSONA_ORDER = {
+    "default": 0, "unhinged": 1, "furious": 2, "horny": 3,
+    "caveman": 4, "weeboo": 5, "drunk": 6, "batman": 7,
+    "shakespeare": 8, "god": 9, "emo": 10, "sassy": 11,
+    "british": 12, "french": 13, "american": 14, "asian": 15,
+}
 
 
 async def _ping_model(model: str, provider: str = "nim") -> None:
@@ -66,7 +72,7 @@ def get_models(provider: str = Query("nim")):
 
 
 @router.get("/settings")
-def get_settings(provider: str = Query("nim")):
+def get_settings(provider: str = Query("nim"), reveal_key: bool = False):
     api = provider_api(provider)
     key = api.get("key", "")
     placeholder_nim = "nvapi-YOUR_KEY_HERE"
@@ -79,7 +85,7 @@ def get_settings(provider: str = Query("nim")):
         "has_key": has_key,
         "key_hint": hint,
         "key_len": len(key) if has_key else 0,
-        "key": key if has_key else "",
+        "key": key if has_key and reveal_key else "",
         "temperature": temperature,
     }
 
@@ -98,7 +104,6 @@ async def verify_key(body: VerifyKeyBody):
     if not key:
         return {"valid": False, "error": "API key cannot be empty."}
     try:
-        client = AsyncOpenAI(api_key=key, base_url=body.base_url.strip())
         # Use a small generic model for verification.
         if body.provider == "nim":
             verify_model = "meta/llama-3.1-8b-instruct"
@@ -125,16 +130,17 @@ async def verify_key(body: VerifyKeyBody):
         return {"valid": True, "message": msg}
     except Exception as exc:
         msg = str(exc)
-        if "401" in msg or "403" in msg or "unauthorized" in msg.lower() or "invalid" in msg.lower() or "forbidden" in msg.lower():
+        normalized_message = msg.lower()
+        if "401" in msg or "403" in msg or "unauthorized" in normalized_message or "invalid" in normalized_message or "forbidden" in normalized_message:
             return {"valid": False, "error": "Invalid API key."}
-        if "404" in msg or "connect" in msg.lower() or "timeout" in msg.lower():
+        if "404" in msg or "connect" in normalized_message or "timeout" in normalized_message:
             return {"valid": False, "error": "Could not reach the API endpoint. Check Base URL."}
         return {"valid": False, "error": msg[:120]}
 
 
 @router.patch("/settings")
 def update_settings(body: UpdateSettingsBody):
-    """Write key/base_url/temperature back into models.yaml in place."""
+    """Write key/base_url/temperature back into config.yaml in place."""
     prov = body.provider or "nim"
     if body.key is not None:
         set_env_key(prov, body.key.strip())
@@ -158,21 +164,15 @@ async def list_personas():
     """
     personas = get_personas()
     
-    persona_list = []
-    for name, content in personas.items():
-        persona_list.append({"id": name, "description": content})
+    persona_list = [
+        {"id": name, "description": content}
+        for name, content in personas.items()
+    ]
         
     # Ensure default is always present
-    if "default" not in [p["id"] for p in persona_list]:
+    if not any(persona["id"] == "default" for persona in persona_list):
         persona_list.append({"id": "default", "description": "The original and vanilla AI assistant."})
         
-    order = {
-        "default": 0, "unhinged": 1, "furious": 2, "horny": 3, 
-        "caveman": 4, "weeboo": 5, "drunk": 6, "batman": 7, 
-        "shakespeare": 8, "god": 9, "emo": 10, "sassy": 11, 
-        "british": 12, "french": 13, "american": 14, "asian": 15
-    }
-    persona_list.sort(key=lambda x: order.get(x["id"].lower(), 99))
+    persona_list.sort(key=lambda persona: _PERSONA_ORDER.get(persona["id"].lower(), 99))
         
     return {"personas": persona_list, "default": "default"}
-

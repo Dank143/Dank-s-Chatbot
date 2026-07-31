@@ -142,11 +142,59 @@ export function appendMessage(msg, streaming = false, container = null, duoSide 
   return wrapper;
 }
 
-export function updateStreamingMessage(wrapper, raw) {
-  const bubble = wrapper.querySelector('.bubble');
-  bubble.dataset.raw = raw;
-  bubble.innerHTML = renderMarkdown(raw) + '<span class="streaming-cursor"></span>';
-  if (state.autoScroll) scrollToBottom();
+// Render a new prompt and stream either one reply or a duo pair.
+export async function streamNewMessage(content, images = [], documents = []) {
+  const attachments = images.length || documents.length
+    ? JSON.stringify({ images, documents })
+    : null;
+  const userWrapper = appendMessage({ role: 'user', content, attachments });
+  const body = {
+    content,
+    images: images.length ? images : undefined,
+    documents: documents.length ? documents : undefined,
+    web_search: state.webSearch || needsWebSearch(content) || undefined,
+    client_time: clientTime(),
+    persona: state.selectedPersona,
+  };
+  const endpoint = `/api/chats/${state.activeChatId}/messages`;
+
+  if (!state.duoMode || !state.selectedModel2) {
+    const assistantWrapper = appendMessage(
+      { role: 'assistant', content: '', model: state.selectedModel },
+      true,
+    );
+    await streamAssistant(
+      endpoint,
+      { ...body, model: state.selectedModel },
+      userWrapper,
+      assistantWrapper,
+    );
+    return;
+  }
+
+  userWrapper.classList.add('duo');
+  const row = document.createElement('div');
+  row.className = 'duo-message-row';
+  messagesEl.appendChild(row);
+  const left = appendMessage(
+    { role: 'assistant', content: '', model: state.selectedModel },
+    true, row, 0,
+  );
+  const right = appendMessage(
+    { role: 'assistant', content: '', model: state.selectedModel2 },
+    true, row, 1,
+  );
+
+  await Promise.allSettled([
+    streamAssistant(endpoint, { ...body, model: state.selectedModel, duo_side: 0 }, userWrapper, left),
+    streamAssistant(endpoint, {
+      ...body,
+      model: state.selectedModel2,
+      skip_user_save: true,
+      duo_side: 1,
+    }, null, right),
+  ]);
+  injectRetryDuoButton(row);
 }
 
 export function finalizeStreamingMessage(wrapper, ttfsMs = null, totalMs = null) {
@@ -207,7 +255,7 @@ export function copyMessage(btn) {
   });
 }
 
-export const _LANG_EXT = {
+const LANG_EXT = {
   python: 'py', py: 'py',
   javascript: 'js', js: 'js',
   typescript: 'ts', ts: 'ts',
@@ -228,7 +276,7 @@ export function downloadCode(btn) {
   const wrap = btn.closest('.code-block-wrap');
   const code = wrap.querySelector('code').textContent;
   const lang = wrap.querySelector('.code-lang')?.textContent?.toLowerCase().trim() || '';
-  const ext = _LANG_EXT[lang] || 'txt';
+  const ext = LANG_EXT[lang] || 'txt';
   const filename = `code.${ext}`;
   const blob = new Blob([code], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
@@ -270,6 +318,30 @@ async function deleteFrom(wrapper, msgId) {
       }
     }
   });
+}
+
+async function deleteFollowingTurn(wrapper) {
+  const next = wrapper.nextElementSibling;
+  const target = next?.classList.contains('message-wrapper')
+    ? next
+    : next?.querySelector('.message-wrapper');
+  if (target?.dataset.msgId) await deleteFrom(target, target.dataset.msgId);
+}
+
+function latestUserText() {
+  const bubbles = messagesEl.querySelectorAll('.message-wrapper.user .bubble');
+  const bubble = bubbles[bubbles.length - 1];
+  return bubble?.dataset.raw || bubble?.textContent.trim() || '';
+}
+
+function resetForStreaming(wrapper) {
+  const bubble = wrapper.querySelector('.bubble');
+  bubble.innerHTML = '<div class="streaming-cursor"></div>';
+  bubble.dataset.raw = '';
+  wrapper.querySelector('.message-actions')?.remove();
+  wrapper.querySelectorAll(
+    '.generation-stopped, .error-box, .truncation-notice, .think-block',
+  ).forEach((element) => element.remove());
 }
 
 export async function editMessage(btn) {
@@ -380,50 +452,7 @@ export async function editMessage(btn) {
 
     beginStreaming();
 
-    const attJson = (images.length || docs.length) ? JSON.stringify({ images, documents: docs }) : null;
-    
-    if (state.duoMode && state.selectedModel2) {
-      const userWrapper = appendMessage({ role: 'user', content: newContent, attachments: attJson });
-      userWrapper.classList.add('duo');
-      const row = document.createElement('div');
-      row.className = 'duo-message-row';
-      messagesEl.appendChild(row);
-
-      const asstWrapperL = appendMessage({ role: 'assistant', content: '', model: state.selectedModel }, true, row, 0);
-      const asstWrapperR = appendMessage({ role: 'assistant', content: '', model: state.selectedModel2 }, true, row, 1);
-
-      const bodyBase = {
-        content: newContent,
-        images: images.length ? images : undefined,
-        documents: docs.length ? docs : undefined,
-        web_search: state.webSearch || needsWebSearch(newContent) || undefined,
-        client_time: clientTime(),
-        persona: state.selectedPersona
-      };
-
-      await Promise.all([
-        streamAssistant(`/api/chats/${state.activeChatId}/messages`, { ...bodyBase, model: state.selectedModel, duo_side: 0 }, userWrapper, asstWrapperL),
-        streamAssistant(`/api/chats/${state.activeChatId}/messages`, { ...bodyBase, model: state.selectedModel2, skip_user_save: true, duo_side: 1 }, null, asstWrapperR),
-      ]);
-      
-      injectRetryDuoButton(row);
-    } else {
-      const userWrapper = appendMessage({ role: 'user', content: newContent, attachments: attJson });
-      const assistantWrapper = appendMessage({ role: 'assistant', content: '', model: state.selectedModel }, true);
-
-      await streamAssistant(
-        `/api/chats/${state.activeChatId}/messages`,
-        {
-          content: newContent, model: state.selectedModel,
-          images: images.length ? images : undefined,
-          documents: docs.length ? docs : undefined,
-          web_search: state.webSearch || needsWebSearch(newContent) || undefined,
-          client_time: clientTime(),
-          persona: state.selectedPersona
-        },
-        userWrapper, assistantWrapper
-      );
-    }
+    await streamNewMessage(newContent, images, docs);
 
     endStreaming();
     updateSendBtn();
@@ -449,46 +478,22 @@ export async function retryMessage(btn) {
 
   // Delete future turns (but keep current turn intact to preserve siblings in duo mode)
   const row = wrapper.closest('.duo-message-row');
-  const nextNode = (row || wrapper).nextElementSibling;
-  
   if (row) {
-    const duoBtn = row.querySelector('.retry-duo-btn');
-    if (duoBtn) duoBtn.remove();
+    row.querySelector('.retry-duo-btn')?.remove();
   }
-  
-  if (nextNode) {
-     const targetForDelete = nextNode.classList.contains('message-wrapper') ? nextNode : nextNode.querySelector('.message-wrapper');
-     if (targetForDelete && targetForDelete.dataset.msgId) {
-        await deleteFrom(targetForDelete, targetForDelete.dataset.msgId);
-     }
-  }
+  await deleteFollowingTurn(row || wrapper);
 
   // Mirror send/edit: honor web-search toggle or auto-detect.
-  const userBubbles = messagesEl.querySelectorAll('.message-wrapper.user .bubble');
-  const lastUser = userBubbles[userBubbles.length - 1];
-  const lastUserText = lastUser ? (lastUser.dataset.raw || lastUser.textContent.trim()) : '';
+  const lastUserText = latestUserText();
 
   beginStreaming();
-
-  // Reset the wrapper for streaming
-  const bubble = wrapper.querySelector('.bubble');
-  bubble.innerHTML = '<div class="streaming-cursor"></div>';
-  bubble.dataset.raw = '';
-  
-  const existingActions = wrapper.querySelector('.message-actions');
-  if (existingActions) existingActions.remove();
-
-  // Clear any notices or extra blocks from the previous run
-  ['.generation-stopped', '.error-box', '.truncation-notice', '.think-block'].forEach(sel => {
-    const el = wrapper.querySelector(sel);
-    if (el) el.remove();
-  });
+  resetForStreaming(wrapper);
   
   // Notice we use overwrite_message_id instead of deleting the message entirely
   await streamAssistant(
     `/api/chats/${state.activeChatId}/regenerate`,
     {
-      model: model,
+      model,
       web_search: state.webSearch || needsWebSearch(lastUserText) || undefined,
       client_time: clientTime(),
       overwrite_message_id: msgId,
@@ -524,20 +529,10 @@ export async function retryDuoMessage(btnOrRow) {
   const wrappers = Array.from(row.querySelectorAll('.message-wrapper'));
   if (wrappers.length !== 2) return;
   
-  const duoBtn = row.querySelector('.retry-duo-btn');
-  if (duoBtn) duoBtn.remove();
+  row.querySelector('.retry-duo-btn')?.remove();
+  await deleteFollowingTurn(row);
 
-  const nextNode = row.nextElementSibling;
-  if (nextNode) {
-     const targetForDelete = nextNode.classList.contains('message-wrapper') ? nextNode : nextNode.querySelector('.message-wrapper');
-     if (targetForDelete && targetForDelete.dataset.msgId) {
-        await deleteFrom(targetForDelete, targetForDelete.dataset.msgId);
-     }
-  }
-
-  const lastUserBubbles = messagesEl.querySelectorAll('.message-wrapper.user .bubble');
-  const lastUser = lastUserBubbles[lastUserBubbles.length - 1];
-  const lastUserText = lastUser ? (lastUser.dataset.raw || lastUser.textContent.trim()) : '';
+  const lastUserText = latestUserText();
   const webSearch = state.webSearch || needsWebSearch(lastUserText) || undefined;
   const cTime = clientTime();
 
@@ -547,24 +542,12 @@ export async function retryDuoMessage(btnOrRow) {
 
   const promises = wrappers.map(wrapper => {
     const msgId = wrapper.dataset.msgId || validMsgId;
-    const model = wrapper.dataset.model;
-    const bubble = wrapper.querySelector('.bubble');
-    bubble.innerHTML = '<div class="streaming-cursor"></div>';
-    bubble.dataset.raw = '';
-    
-    const existingActions = wrapper.querySelector('.message-actions');
-    if (existingActions) existingActions.remove();
-
-    // Clear any notices or extra blocks from the previous run
-    ['.generation-stopped', '.error-box', '.truncation-notice', '.think-block'].forEach(sel => {
-      const el = wrapper.querySelector(sel);
-      if (el) el.remove();
-    });
+    resetForStreaming(wrapper);
 
     return streamAssistant(
       `/api/chats/${state.activeChatId}/regenerate`,
       {
-        model: model,
+        model: wrapper.dataset.model,
         web_search: webSearch,
         client_time: cTime,
         overwrite_message_id: msgId,

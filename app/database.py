@@ -1,13 +1,18 @@
 import asyncio
 import sqlite3
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Literal, TypeVar
 
-DB_PATH = Path(__file__).parent.parent / "chatbot.db"
+DB_PATH: Path = Path(__file__).parent.parent / "chatbot.db"
+DBFetchMode = Literal["all", "one", "none"]
+DatabaseRow = dict[str, Any]
+T = TypeVar("T")
 
 
-def get_db():
-    """New DB connection with FK, WAL, and busy timeout."""
+def get_db() -> sqlite3.Connection:
+    """Create a configured SQLite connection for a single unit of work."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -17,7 +22,12 @@ def get_db():
     return conn
 
 
-def init_db():
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    """Return the existing column names for a SQLite table."""
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def init_db() -> None:
     """Create tables if absent and apply lightweight migrations."""
     with get_db() as conn:
         conn.executescript("""
@@ -43,23 +53,16 @@ def init_db():
                 FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
             );
         """)
-        # Migration: add attachments column if missing.
-        try:
+        chat_columns = _table_columns(conn, "chats")
+        message_columns = _table_columns(conn, "messages")
+
+        if "attachments" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add model column if missing.
-        try:
+        if "model" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add duo_mode column if missing.
-        try:
+        if "duo_mode" not in chat_columns:
             conn.execute("ALTER TABLE chats ADD COLUMN duo_mode INTEGER NOT NULL DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add duo_side column if missing, and fix existing duo chats.
-        try:
+        if "duo_side" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN duo_side INTEGER NOT NULL DEFAULT 0")
             conn.execute("""
                 WITH numbered AS (
@@ -70,38 +73,18 @@ def init_db():
                 UPDATE messages SET duo_side = (SELECT side FROM numbered WHERE numbered.id = messages.id)
                 WHERE id IN (SELECT id FROM numbered);
             """)
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add search_data column if missing.
-        try:
+        if "search_data" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN search_data TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add timing_data column if missing.
-        try:
+        if "timing_data" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN timing_data TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add persona column if missing.
-        try:
+        if "persona" not in chat_columns:
             conn.execute("ALTER TABLE chats ADD COLUMN persona TEXT NOT NULL DEFAULT 'default'")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add model2 column if missing.
-        try:
+        if "model2" not in chat_columns:
             conn.execute("ALTER TABLE chats ADD COLUMN model2 TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add persona2 column if missing.
-        try:
+        if "persona2" not in chat_columns:
             conn.execute("ALTER TABLE chats ADD COLUMN persona2 TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # Migration: add persona column to messages if missing.
-        try:
+        if "persona" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN persona TEXT")
-        except sqlite3.OperationalError:
-            pass
 
         # Index: every send/regenerate queries messages by (chat_id, created_at).
         # Without this, SQLite full-scans the entire table on every request.
@@ -109,25 +92,35 @@ def init_db():
 
 
 def now_iso() -> str:
+    """Return the current UTC timestamp in ISO-8601 format."""
     return datetime.now(timezone.utc).isoformat()
 
 
-async def db_execute(query: str, params: tuple | list = (), fetch: str = "none"):
-    """Execute a query and fetch 'all', 'one', or 'none'. Returns dicts."""
-    def _work():
+async def db_execute(
+    query: str,
+    params: Sequence[Any] = (),
+    fetch: DBFetchMode = "none",
+) -> list[DatabaseRow] | DatabaseRow | None:
+    """Run one SQL statement in a worker thread and return dictionary rows."""
+
+    def _work() -> list[DatabaseRow] | DatabaseRow | None:
         with get_db() as conn:
             res = conn.execute(query, params)
-            if fetch == "all": return [dict(r) for r in res.fetchall()]
+            if fetch == "all":
+                return [dict(row) for row in res.fetchall()]
             if fetch == "one":
                 row = res.fetchone()
-                return dict(row) if row else None
+                return dict(row) if row is not None else None
             return None
+
     return await asyncio.to_thread(_work)
 
 
-async def run_db_task(func):
-    """Run a custom function in a background thread, passing it a managed DB connection."""
-    def _work():
+async def run_db_task(func: Callable[[sqlite3.Connection], T]) -> T:
+    """Run a database unit of work in a thread with a managed connection."""
+
+    def _work() -> T:
         with get_db() as conn:
             return func(conn)
+
     return await asyncio.to_thread(_work)

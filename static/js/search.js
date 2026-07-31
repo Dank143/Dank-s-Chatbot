@@ -61,9 +61,7 @@ export class ChatSearchModal {
     });
 
     this.cancelBtn.addEventListener('click', () => {
-      this.selectionMode = false;
-      this.selectedChatIds.clear();
-      this.render();
+      this.resetSelection(true);
     });
 
     this.selectAllBtn.addEventListener('click', () => this.handleSelectAll());
@@ -76,15 +74,26 @@ export class ChatSearchModal {
     this.modalInput.value = '';
     this.selectionMode = false;
     this.selectedChatIds.clear();
-    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    this.refreshCache();
     this.render();
     this.modalInput.focus();
   }
 
   close() {
     this.backdrop.style.display = 'none';
+    this.resetSelection();
+  }
+
+  resetSelection(render = false) {
     this.selectionMode = false;
     this.selectedChatIds.clear();
+    if (render) this.render();
+  }
+
+  refreshCache() {
+    this._cachedSortedChats = [...state.chats].sort(
+      (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+    );
   }
 
   formatRelativeDate(isoString) {
@@ -140,6 +149,7 @@ export class ChatSearchModal {
       return;
     }
 
+    const fragment = document.createDocumentFragment();
     visibleChats.forEach(chat => {
       const el = document.createElement('div');
       el.className = 'chat-search-item' + (this.selectedChatIds.has(chat.id) ? ' selected' : '');
@@ -214,8 +224,9 @@ export class ChatSearchModal {
         }
       });
 
-      this.list.appendChild(el);
+      fragment.appendChild(el);
     });
+    this.list.appendChild(fragment);
   }
 
   handleSelectAll() {
@@ -242,10 +253,9 @@ export class ChatSearchModal {
       showWelcome();
     }
 
-    this.selectionMode = false;
-    this.selectedChatIds.clear();
+    this.resetSelection();
     await loadChats();
-    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    this.refreshCache();
     this.render();
   }
 
@@ -253,20 +263,18 @@ export class ChatSearchModal {
     if (this.selectedChatIds.size === 0) return;
     const ids = Array.from(this.selectedChatIds);
     
-    let anyUnstarred = false;
-    for (const id of ids) {
-      const chat = state.chats.find(c => c.id === id);
-      if (chat && !chat.starred) anyUnstarred = true;
-    }
+    const anyUnstarred = ids.some((id) => {
+      const chat = state.chats.find(item => item.id === id);
+      return chat && !chat.starred;
+    });
     
     const actionText = anyUnstarred ? 'Star' : 'Unstar';
     if (!await confirmDialog(`${actionText} ${ids.length} selected chat(s)?`, actionText, 'btn-warning')) return;
     
     await Promise.all(ids.map(id => api(`/chats/${id}`, { method: 'PATCH', body: { starred: anyUnstarred } })));
-    this.selectionMode = false;
-    this.selectedChatIds.clear();
+    this.resetSelection();
     await loadChats();
-    this._cachedSortedChats = [...state.chats].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    this.refreshCache();
     this.render();
   }
 }

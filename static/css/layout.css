@@ -19,7 +19,6 @@
 
 .sidebar-top,
 .chat-list-wrapper,
-.chat-search-container,
 .sidebar-footer {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
@@ -34,9 +33,10 @@
 }
 
 .sidebar.collapsed .sidebar-top,
-.sidebar.collapsed .chat-search-container,
 .sidebar.collapsed .new-chat-btn,
-.sidebar.collapsed .chat-list-wrapper {
+.sidebar.collapsed .chat-list-wrapper,
+.sidebar.collapsed .user-info,
+.sidebar.collapsed .plan-badge {
   opacity: 0;
   pointer-events: none;
 }
@@ -69,15 +69,9 @@
 
 /* Let the avatar show through when collapsed by not fading the footer! */
 .sidebar.collapsed .sidebar-footer {
-  opacity: 1 !important;
+  opacity: 1;
   pointer-events: auto;
   border-top: none;
-}
-
-.sidebar.collapsed .user-info,
-.sidebar.collapsed .plan-badge {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .sidebar-top {
@@ -102,13 +96,6 @@
   font-size: 14.5px;
   color: var(--text);
   letter-spacing: -.3px;
-}
-
-.logo-icon {
-  color: var(--accent);
-  font-size: 18px;
-  line-height: 1;
-  filter: drop-shadow(0 0 6px var(--accent));
 }
 
 .new-chat-btn {
@@ -201,10 +188,7 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
 }
 .chat-action-btn:hover,
 .chat-item.menu-open .chat-action-btn { background: var(--bg-active); color: var(--text); }
-.chat-action-btn.star-btn.starred { color: #f5a623; }
-.chat-action-btn.delete-btn:hover { color: #ff4444; }
 #topStarBtn.starred { color: #f5a623; }
-#topDeleteBtn:hover { color: #ff4444; }
 
 /* ── Sidebar footer ───────────────────────────────────────────────── */
 .sidebar-footer {
@@ -284,29 +268,24 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
 
 .duo-message-row > .message-wrapper {
   margin: 0;
-  border-bottom: none;
   display: flex;
   flex-direction: column;
   flex: 1;
   width: 50%;
-  max-width: 50%; 
+  max-width: 50%;
+  padding: 0 32px;
 }
 
 .duo-message-row > .message-wrapper:first-child {
-  border-right: none;
-  justify-self: end;
   margin-left: auto;
   margin-right: 0;
-  padding-left: 60px;  /* Controls the far LEFT gap (to the sidebar) */
-  padding-right: 32px; /* Controls the gap to the center line */
+  padding-left: 60px;
 }
 
 .duo-message-row > .message-wrapper:last-child {
-  justify-self: start;
   margin-left: 0;
   margin-right: auto;
-  padding-left: 32px;  /* Controls the gap to the center line */
-  padding-right: 36px; /* Controls the far RIGHT gap (to the scrollbar) */
+  padding-right: 36px;
 }
 
 .duo-message-row > .message-wrapper .message-body {
@@ -317,16 +296,8 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
   padding-right: 8px; /* space for scrollbar */
 }
 
-/* webkit scrollbar for duo message body */
 .duo-message-row > .message-wrapper .message-body::-webkit-scrollbar {
   width: 6px;
-}
-.duo-message-row > .message-wrapper .message-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-.duo-message-row > .message-wrapper .message-body::-webkit-scrollbar-thumb {
-  background: var(--border-input);
-  border-radius: 99px;
 }
 
 /* Retry Both Button in Duo Mode */
@@ -373,15 +344,11 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
     display: none;
   }
   .duo-message-row > .message-wrapper:first-child {
-    justify-self: center;
-    padding-left: 24px;
-    padding-right: 24px;
     border-bottom: 1px solid var(--border-input);
   }
+  .duo-message-row > .message-wrapper:first-child,
   .duo-message-row > .message-wrapper:last-child {
-    justify-self: center;
-    padding-left: 24px;
-    padding-right: 24px;
+    padding: 0 24px;
   }
 }
 
@@ -718,7 +685,7 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
 
 @media (min-width: 769px) {
   #sidebarToggleMobile {
-    display: none !important;
+    display: none;
   }
 }
 
@@ -824,11 +791,5 @@ body.context-menu-open .chat-item.menu-open:not(.active) { background: transpare
 
   .sidebar.collapsed {
     transform: translateX(-100%);
-  }
-
-  .model-dropdown {
-    right: 12px;
-    left: 12px;
-    width: auto;
   }
 }

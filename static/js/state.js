@@ -68,6 +68,27 @@ export const PROVIDER_UI_CONFIG = {
   }
 };
 
+export const PROVIDERS = Object.keys(PROVIDER_UI_CONFIG);
+const PROVIDER_STATE_KEYS = {
+  nim: ['modelsNim', 'defaultModelNim', 'hasKeyNim'],
+  ollama: ['modelsOllama', 'defaultModelOllama', 'hasKeyOllama'],
+  cloudflare: ['modelsCloudflare', 'defaultModelCloudflare', 'hasKeyCloudflare'],
+};
+
+export function getProviderModels(provider) {
+  return state[PROVIDER_STATE_KEYS[provider]?.[0]] || [];
+}
+
+export function getModelProvider(modelId) {
+  return PROVIDERS.find(
+    (provider) => getProviderModels(provider).some((model) => model.id === modelId),
+  ) || null;
+}
+
+export function providerHasKey(provider) {
+  return Boolean(state[PROVIDER_STATE_KEYS[provider]?.[2]]);
+}
+
 export const $ = (id) => document.getElementById(id);
 
 export const starredList      = $('starredList');
@@ -93,7 +114,6 @@ export const renameBtn        = $('renameBtn');
 export const downloadBtn      = $('downloadBtn');
 export const topStarBtn       = $('topStarBtn');
 export const sidebar          = $('sidebar');
-export const searchChatBtn    = $('searchChatBtn');
 
 export const duoToggleBtn        = $('duoToggleBtn');
 export const duoModelSelectorBtn = $('duoModelSelectorBtn');
@@ -106,8 +126,6 @@ export const collapsedStarBtn     = $('collapsedStarBtn');
 export const collapsedRecentBtn   = $('collapsedRecentBtn');
 export const collapsedStarList    = $('collapsedStarList');
 export const collapsedRecentList  = $('collapsedRecentList');
-export const chatListWrapper      = document.querySelector('.chat-list-wrapper');
-export const newChatBtn           = $('newChatBtn');
 export const lightbox         = $('lightbox');
 export const lightboxImg      = $('lightboxImg');
 
@@ -221,20 +239,9 @@ export function setProvider(p) {
     localStorage.removeItem('provider');
   }
   
-  // Switch models to active provider's lists
-  if (p === 'nim') {
-    state.models = state.modelsNim;
-    state.defaultModel = state.defaultModelNim;
-  } else if (p === 'ollama') {
-    state.models = state.modelsOllama;
-    state.defaultModel = state.defaultModelOllama;
-  } else if (p === 'cloudflare') {
-    state.models = state.modelsCloudflare;
-    state.defaultModel = state.defaultModelCloudflare;
-  } else {
-    state.models = [];
-    state.defaultModel = null;
-  }
+  const keys = PROVIDER_STATE_KEYS[p];
+  state.models = keys ? state[keys[0]] : [];
+  state.defaultModel = keys ? state[keys[1]] : null;
   
   // If selected model isn't in new provider, fallback to default
   if (!p || !state.models.find(m => m.id === state.selectedModel)) {

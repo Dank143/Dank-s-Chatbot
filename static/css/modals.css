@@ -60,10 +60,7 @@
   flex: 1;
 }
 
-.model-search-wrap .provider-pill {
-  flex: 1;
-}
-
+.model-search-wrap .provider-pill,
 .model-search-wrap .pill-opt {
   flex: 1;
 }
@@ -77,8 +74,8 @@
   pointer-events: none;
 }
 
-.search-input-field {
-  padding-left: 34px !important;
+.model-search-wrap .search-input-field {
+  padding-left: 34px;
   width: 100%;
   box-sizing: border-box;
 }
@@ -99,15 +96,6 @@
 
 .model-picker-body::-webkit-scrollbar {
   width: 5px;
-}
-
-.model-picker-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.model-picker-body::-webkit-scrollbar-thumb {
-  background: var(--border-input);
-  border-radius: 99px;
 }
 
 .provider-group-label {
@@ -226,10 +214,10 @@ html.light .model-stat-seg {
 }
 
 .chat-search-header-actions button {
-  background: var(--accent-dim) !important;
-  border: 1px solid var(--accent-border) !important;
-  color: var(--accent-2) !important;
-  border-radius: 999px !important;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-2);
+  border-radius: 999px;
   font-weight: 600;
   padding: 8px 18px;
   cursor: pointer;
@@ -237,9 +225,9 @@ html.light .model-stat-seg {
 }
 
 .chat-search-header-actions button:hover:not(:disabled) {
-  background: var(--accent) !important;
-  border-color: var(--accent) !important;
-  color: #fff !important;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .chat-search-header-actions button:disabled {
@@ -262,17 +250,17 @@ html.light .model-stat-seg {
 
 /* Specific hover overrides for Star and Delete */
 .chat-search-header-actions #chatSearchStarBtn:hover:not(:disabled) {
-  background: #f5a623 !important;
+  background: #f5a623;
   /* Yellow */
-  border-color: #f5a623 !important;
-  color: #fff !important;
+  border-color: #f5a623;
+  color: #fff;
 }
 
 .chat-search-header-actions #chatSearchDeleteBtn:hover:not(:disabled) {
-  background: #ef4444 !important;
+  background: #ef4444;
   /* Red */
-  border-color: #ef4444 !important;
-  color: #fff !important;
+  border-color: #ef4444;
+  color: #fff;
 }
 
 .chat-search-body {
@@ -316,7 +304,7 @@ html.light .model-stat-seg {
   min-width: 0;
 }
 
-.chat-search-checkbox {
+.chat-select-checkbox {
   appearance: none;
   -webkit-appearance: none;
   width: 18px;
@@ -332,12 +320,12 @@ html.light .model-stat-seg {
   transition: background var(--transition), border-color var(--transition);
 }
 
-.chat-search-checkbox:checked {
+.chat-select-checkbox:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.chat-search-checkbox:checked::after {
+.chat-select-checkbox:checked::after {
   content: '';
   width: 4px;
   height: 8px;

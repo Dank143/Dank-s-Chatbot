@@ -66,10 +66,12 @@ html.light {
   --code-inline:  #075985;
 }
 
-/* smooth theme transition on toggled elements only */
-body { transition: background var(--transition), color var(--transition); }
-
-body { display: flex; height: 100dvh; overflow: hidden; }
+body {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  transition: background var(--transition), color var(--transition);
+}
 
 /* ── Scrollbar ────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; }

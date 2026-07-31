@@ -80,7 +80,8 @@
   flex-shrink: 0;
 }
 
-.icon-btn:hover {
+.icon-btn:hover,
+.context-menu-item:hover {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -180,11 +181,6 @@
   color: var(--text-sub);
   cursor: pointer;
   transition: background var(--transition), color var(--transition);
-}
-
-.context-menu-item:hover {
-  background: var(--bg-hover);
-  color: var(--text);
 }
 
 .context-menu-item svg {

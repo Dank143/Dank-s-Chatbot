@@ -3,6 +3,8 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator, Iterable
+from typing import Any, TypeAlias, TypedDict
 
 import httpx
 from openai import AsyncOpenAI
@@ -10,23 +12,48 @@ from app.config import provider_api
 
 logger = logging.getLogger(__name__)
 
-_client_cache: dict[tuple, AsyncOpenAI] = {}
+
+class AttachmentData(TypedDict):
+    """Normalized image and document attachments stored with a user message."""
+
+    images: list[Any]
+    documents: list[dict[str, Any]]
+
+
+class ConversationRow(TypedDict):
+    """History fields required to construct an LLM request."""
+
+    role: str
+    content: str
+    attachments: str | None
+
+
+ApiContent: TypeAlias = str | list[dict[str, Any]]
+ApiMessage: TypeAlias = dict[str, Any]
+StreamResult: TypeAlias = dict[str, Any]
+
+CLIENT_CACHE: dict[tuple[str, str], AsyncOpenAI] = {}
+DEFAULT_REQUEST_TIMEOUT_SECONDS: float = 60.0
+DEFAULT_CONNECT_TIMEOUT_SECONDS: float = 5.0
 
 def get_client(provider: str) -> AsyncOpenAI:
     """Get or create an AsyncOpenAI client for the given provider."""
     api = provider_api(provider)
     key = (api["key"], api["base_url"])
-    if key not in _client_cache:
-        _client_cache[key] = AsyncOpenAI(
+    if key not in CLIENT_CACHE:
+        CLIENT_CACHE[key] = AsyncOpenAI(
             api_key=key[0],
             base_url=key[1],
             http_client=httpx.AsyncClient(
                 http2=True,
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
-                timeout=httpx.Timeout(60.0, connect=5.0),
+                timeout=httpx.Timeout(
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                    connect=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                ),
             ),
         )
-    return _client_cache[key]
+    return CLIENT_CACHE[key]
 
 
 _CREATOR_KEYWORDS_EN = {"??:D??"} # {"creator", "maker", "developer", "father", "daddy"}
@@ -38,15 +65,24 @@ _CREATOR_RESPONSE_VI = "QUÝ NGÀI ĐĂNG VĨ ĐẠI. SIUUUUUU!"
 
 def is_asking_about_creator(text: str) -> str | None:
     """Canned hail response if the text asks who made the bot, else None."""
-    if any(p in text.lower() for p in _CREATOR_PHRASES_VI):
+    normalized_text = text.lower()
+    if any(p in normalized_text for p in _CREATOR_PHRASES_VI):
         return _CREATOR_RESPONSE_VI
     pattern = r'\byour\s+(?:' + '|'.join(re.escape(k) for k in _CREATOR_KEYWORDS_EN) + r')\b'
-    if re.search(pattern, text, re.IGNORECASE):
+    if re.search(pattern, normalized_text, re.IGNORECASE):
         return _CREATOR_RESPONSE_EN
     return None
 
 
-async def race_models(primary_task, backup_task, timeout=5.0, logger=None, task_name="task", primary_name="Primary", backup_name="Backup"):
+async def race_models(
+    primary_task: asyncio.Task[Any] | None,
+    backup_task: asyncio.Task[Any] | None,
+    timeout: float = 5.0,
+    logger: logging.Logger | None = None,
+    task_name: str = "task",
+    primary_name: str = "Primary",
+    backup_name: str = "Backup",
+) -> Any | None:
     """
     Run two tasks (primary and backup) with an overall timeout.
     Returns the result of primary if it succeeds.
@@ -57,14 +93,14 @@ async def race_models(primary_task, backup_task, timeout=5.0, logger=None, task_
     pending = {t for t in (primary_task, backup_task) if t}
     log = logger or logging.getLogger(__name__)
 
-    def _safe_result(task):
+    def _safe_result(task: asyncio.Task[Any]) -> Any | None:
         try:
             return task.result()
         except Exception as e:
             log.warning("Task %s raised exception: %s", task, e)
             return None
 
-    def _short_repr(val):
+    def _short_repr(val: Any) -> str:
         s = repr(val)
         return s if len(s) < 200 else s[:197] + "..."
 
@@ -101,7 +137,7 @@ async def race_models(primary_task, backup_task, timeout=5.0, logger=None, task_
     return None
 
 
-def parse_attachments(raw: str | None) -> dict:
+def parse_attachments(raw: str | None) -> AttachmentData:
     """Parse attachments JSON into {images, documents}; legacy list → images."""
     if not raw:
         return {"images": [], "documents": []}
@@ -111,7 +147,7 @@ def parse_attachments(raw: str | None) -> dict:
     return {"images": data.get("images", []), "documents": data.get("documents", [])}
 
 
-def build_api_content(text: str, attachments: dict) -> "str | list":
+def build_api_content(text: str, attachments: AttachmentData) -> ApiContent:
     """Build plain text or multimodal content parts for a message."""
     images = attachments.get("images", [])
     documents = attachments.get("documents", [])
@@ -133,17 +169,21 @@ def build_api_content(text: str, attachments: dict) -> "str | list":
     return parts
 
 
-def _to_parts(content: "str | list") -> list[dict]:
+def _to_parts(content: ApiContent) -> list[dict[str, Any]]:
     return content if isinstance(content, list) else [{"type": "text", "text": content}]
 
 
-def reasoning_controls(reasoning: str | None) -> tuple[dict, str | None]:
+def reasoning_controls(reasoning: str | None) -> tuple[dict[str, Any], str | None]:
     """Map a model's YAML `reasoning` tag to (extra create() kwargs, system suffix)."""
     return {}, None
 
 
-def build_messages(history, system_prompt: str | None, today: str | None = None,
-                   extra_system: str | None = None) -> list[dict]:
+def build_messages(
+    history: Iterable[ConversationRow],
+    system_prompt: str | None,
+    today: str | None = None,
+    extra_system: str | None = None,
+) -> list[ApiMessage]:
     """Convert DB history rows into OpenAI-format messages list."""
     rows = list(history)
     # Drop leading assistant rows (truncation may start mid-exchange)
@@ -154,7 +194,7 @@ def build_messages(history, system_prompt: str | None, today: str | None = None,
         (i for i, r in enumerate(rows) if r["role"] == "user"),
         default=None,
     )
-    raw: list[dict] = []
+    raw: list[ApiMessage] = []
     for i, r in enumerate(rows):
         att = parse_attachments(r["attachments"])
         had_images = bool(att["images"])
@@ -217,8 +257,15 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in s or getattr(exc, "status_code", None) == 429 or "exhausted" in s or "overloaded" in s or "503" in s or getattr(exc, "status_code", None) == 503
 
 
-async def llm_stream(client, model, messages, max_tokens, temperature, result: dict,
-                     extra_create: dict | None = None):
+async def llm_stream(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[ApiMessage],
+    max_tokens: int,
+    temperature: float,
+    result: StreamResult,
+    extra_create: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
     """Stream model reply as SSE deltas, emitting <think> content separately."""
     full_content: list[str] = []
     think_content: list[str] = []

@@ -21,11 +21,9 @@ from app.llm import build_messages, is_asking_about_creator, llm_stream, reasoni
 from app.schemas import RegenerateBody, SaveAssistantBody, SendMessageBody
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api/chats")
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-
 _SEP = r'[\s.\-…_]*'
 _DANG_VI_RE = re.compile(r'[Đđ]' + _SEP + r'[Ăă]' + _SEP + r'n' + _SEP + r'g', re.IGNORECASE)
 _DANG_EN_RE = re.compile(r'(?<![a-zA-Z])d' + _SEP + r'a' + _SEP + r'n' + _SEP + r'g(?![a-zA-Z])', re.IGNORECASE)
@@ -80,12 +78,6 @@ async def _save_assistant(chat_id: str, msg_id: str, content: str, title: "str |
     await run_db_task(_task)
 
 
-def _model_reasoning(model_id: str) -> "str | None":
-    """The `reasoning` tag for a model id from models.yaml, or None if untagged."""
-    info = provider_model_info(model_id)
-    return info.get("reasoning") if info else None
-
-
 def _build_request(history, today: str, model: str, persona: str = "default"):
     """Shared message/generation setup for send + regenerate."""
     
@@ -96,12 +88,13 @@ def _build_request(history, today: str, model: str, persona: str = "default"):
     #     pass
 
     defaults = load_config().get("defaults", {})
-    max_turns = defaults.get("max_history_turns", 50)
-    if len(history) > max_turns:
-        history = history[-max_turns:]
-    extra_create, extra_system = reasoning_controls(_model_reasoning(model))
+    max_messages = defaults.get("max_history_messages", 50)
+    if len(history) > max_messages:
+        history = history[-max_messages:]
+    model_info = provider_model_info(model) or {}
+    extra_create, extra_system = reasoning_controls(model_info.get("reasoning"))
     # Remove asterisks used in YAML names (e.g. "Gemma 4 31B*")
-    model_name = provider_model_info(model).get("name", "").replace("*", "").strip()
+    model_name = model_info.get("name", "").replace("*", "").strip()
     model_identity = f"You are {model_name}."
 
     if extra_system:
@@ -208,8 +201,8 @@ async def _do_web_search(query: str, history: list, chat_id: str, api_messages: 
 
 def _fetch_history(conn, chat_id: str, cfg: dict, duo_side: int, before_msg_id: "str | None" = None) -> list[dict]:
     """Fetch and filter chat history for a duo_side track."""
-    max_turns = cfg.get("defaults", {}).get("max_history_turns", 50)
-    sql_limit = max(max_turns * 4, 20)
+    max_messages = cfg.get("defaults", {}).get("max_history_messages", 50)
+    sql_limit = max(max_messages * 4, 20)
     
     query = "SELECT role, content, attachments, duo_side FROM messages WHERE chat_id=?"
     params: list = [chat_id]

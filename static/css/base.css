@@ -77,3 +77,4 @@ body {
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-input); border-radius: 99px; }
+::-webkit-scrollbar-button { display: none; height: 0; width: 0; }

@@ -1,148 +1,137 @@
 # Web Search Pipeline
 
-Free-tier and self-hosted web search and content retrieval for the chatbot. Given a user query, it discovers relevant sources, fetches their content, ranks it semantically, and returns a context block that gets injected into the LLM prompt.
+The chatbot uses a hosted search-and-extraction cascade:
 
-No paid APIs. Discovery uses self-hosted SearXNG and DuckDuckGo (via `ddgs`) plus open MediaWiki APIs; content is fetched via Jina Reader, direct extraction (trafilatura), MediaWiki APIs, and native JSON APIs; ranking uses local ONNX embeddings.
+```text
+Exa → Tavily → Firecrawl
+```
 
-## Module Layout
+Providers are called sequentially so a successful early response does not spend credits on later providers. Each search returns at most five pages, and the complete retrieval operation has a shared 15-second deadline. If the deadline is nearly exhausted, the pipeline returns the best usable content already collected.
+
+SearXNG, DuckDuckGo, Jina Reader, and Trafilatura are not part of the active pipeline.
+
+## Module layout
 
 | File | Responsibility |
 |------|----------------|
-| `pipeline.py` | Orchestration: rewrite → route → staggered search cascade → rerank → time-boxed fetch → assemble |
-| `engines.py` | Search engine integrations: SearXNG (primary), DuckDuckGo (secondary), Tavily (tertiary). |
-| `fetcher.py` | Content retrieval (Jina, trafilatura, MediaWiki, Native JSON APIs) + skip rules + host-fetcher caching. |
-| `domain_trust.py` | Trust scoring (tier multipliers), pre-fetch URL filtering (trash/spam gates), post-fetch content heuristics, and persistent runtime domain blocking. |
-| `llm_processing.py` | LLM-based query rewriting, intent classification, and semantic reranking using embeddings. |
-| `embedder.py` | Local semantic embeddings via fastembed (ONNX, CPU) — no external embedding API calls. |
-| `cache.py` | Simple in-memory caching layer for search results. |
+| `pipeline.py` | Cache/coalescing, query rewrite, provider cascade, reranking, repair, quality gates, and context assembly |
+| `engines.py` | HTTP integrations and circuit breakers for Exa, Tavily, and Firecrawl |
+| `fetcher.py` | URL filtering, page-body validation, and text truncation |
+| `domain_trust.py` | URL/content quality checks, trust scoring, and runtime domain blocking |
+| `llm_processing.py` | LLM query rewriting, intent classification, and semantic reranking |
+| `embedder.py` | Local ONNX embeddings through `fastembed` |
+| `cache.py` | Positive/negative result caching and cached configuration reads |
 
-Entry point: `fetch_web_context(query, num_urls, history_context) -> (context, debug)`.
+The public entry point is:
 
-## End-to-End Flow
-
-```text
-query + history
-   │
-   ▼
-[1] Cache Check ──hit──► return cached (context, debug)
-   │ miss
-   ▼
-[2] Intent Classification & Query Rewrite (Regex Fast-Path / LLM)
-   │  If regex matches (e.g., "opinion", "youtube", "error"), instant route!
-   │  Else, race Ollama vs NIM to rewrite query & detect intent (5s timeout).
-   ▼
-[3] Routing
-   ├─ intent (reddit/cambridge/docs) ──► build site-scoped query
-   ├─ intent == "wiki" (entity) ──► Wiki discovery (MediaWiki/Fandom APIs)
-   └─ else ──► general query
-   │
-   ▼
-[4] Staggered Search Cascade (SearXNG → DuckDuckGo → Tavily)
-   │  SearXNG is queried first. If it takes > 2.0s (1.0s for fallbacks), DDG is
-   │  launched concurrently. If both fail, Tavily is called.
-   │  If site-scoped results are < num_urls/2, a general fallback cascade runs.
-   ▼
-[5] Pre-Fetch Filtering & Merge
-   │  Merge API-discovered seed URLs + Search Cascade results, deduped.
-   │  Garbage SEO URLs (quote farms, keyword-stuffed slugs) are hard-blocked here.
-   ▼
-[6] Semantic Reranking
-   │  Query and result snippets are embedded locally using ONNX fastembed.
-   │  Results are sorted by cosine similarity; junk pages are demoted.
-   │  Scores are multiplied by domain trust tiers (e.g. .edu gets 1.35x boost).
-   ▼
-[7] Time-Boxed Hybrid Fetch Collection
-   │  The top N+2 results are fetched concurrently.
-   │  The loop waits up to 5.0 seconds (budget) to collect fetches.
-   │  It breaks early if `num_urls` acceptable results are successfully loaded.
-   │  Fast responders are then processed strictly in semantic order!
-   ▼
-[8] Tiered Acceptance & Formatting
-   │  Filters fetched content based on strict/relaxed heuristic rules (anchor filtering).
-   │  Truncates total context to 25,000 characters to prevent context blowout.
-   ▼
-[9] Assemble & Return
+```python
+await fetch_web_context(query, num_urls=5, history_context="", chat_id="")
 ```
 
-## Stage Details
+It returns `(context, debug)`. `inject_web_context()` adds the context and citation instructions to the model messages.
 
-### [1] Caching
-In-memory, 5-minute TTL, keyed on `(query, history_hash, num_urls)`. The entire `(context, debug)` tuple is cached to skip downstream work.
+## End-to-end flow
 
-### [2] Query Rewrite & Intent (`llm_processing.py`)
-A fast-path checks for basic intents using Regex (e.g., matching the word "opinion", "youtube", "traceback"). If matched, the query avoids the LLM entirely (0ms latency). 
+```text
+query + recent history
+   │
+   ▼
+[1] Result cache / in-flight request coalescing
+   │ miss
+   ▼
+[2] Regex intent fast path or bounded LLM query rewrite
+   │
+   ▼
+[3] Exa search + text (up to five results)
+   │ inadequate
+   ▼
+[4] Tavily basic search + raw Markdown (up to five results)
+   │ inadequate
+   ▼
+[5] Firecrawl final stage
+   ├─ known incomplete URLs → targeted Scrape repair
+   └─ no candidates at all → Search + Markdown
+   │
+   ▼
+[6] URL filtering, local semantic reranking, quality/relevance gates,
+    snippet backfill, truncation, and assembly
+```
 
-If no match, a race between Ollama and NIM models determines the standalone search query and intent, resolving pronouns from conversation history (e.g., "his voicelines" → "Pantheon voicelines"). The current year is appended for freshness.
+### 1. Cache and coalescing
 
-Keyword rules map the query to an intent:
-- **opinion**: general web (formerly reddit.com)
-- **dictionary**: dictionary.cambridge.org (site-scoped)
-- **documentation**: adds `documentation` suffix
-- **wiki**: Triggers specialized entity discovery
-- **general**: Normal search
+Completed results are cached for five minutes. Empty and timed-out results use a short 30-second TTL. Concurrent identical requests share one in-flight task, preventing duplicate provider calls and duplicate credit usage.
 
-### [3] Wiki Discovery
-For wiki intent, standard search engines often drop key subpages. The pipeline performs specialized discovery:
-1. Searches the Fandom MediaWiki API in parallel (since Fandom HTML is skip-listed from scraping, but its API is open).
-2. Probes for official wikis and uses their MediaWiki API to fetch exact pages.
-These discovered URLs are used as **seed URLs** and injected directly into the fetch wave.
+### 2. Query rewrite and routing
 
-### [4] Staggered Search Cascade (`engines.py` & `pipeline.py`)
-Instead of blasting all engines simultaneously (which causes rate limits) or waiting for them sequentially (which causes UI freezing):
-- **SearXNG** is the primary engine (self-hosted).
-- **DuckDuckGo** starts if SearXNG doesn't respond within 2.0s (1.0s for fallbacks).
-- **Tavily** starts if both fail to return results.
+Obvious intents use regular-expression fast paths. Other queries can be rewritten by the configured auxiliary models to resolve references from recent conversation history and classify documentation, dictionary, wiki, or general intent. The resulting provider query can include a site restriction or freshness year where appropriate.
 
-### [5] Semantic Reranking & Trust Scoring (`llm_processing.py`, `embedder.py`, `domain_trust.py`)
-Results are reranked using semantic embeddings. A local ONNX embedding model runs in-process — no network round trip. This ensures results conceptually similar to the query bubble up, even if keywords mismatch (e.g. "voicelines" ≈ a page titled "Audio"). Junk meta pages (Category:, Talk:) are demoted.
+All rewrite, provider, rerank, and repair work shares the same end-to-end deadline; no stage receives a fresh 15-second window.
 
-Final semantic scores are multiplied by a **Domain Trust Multiplier**:
-- **Tier 1 (Authoritative)**: e.g., wikipedia.org, .gov, .edu (1.35x boost)
-- **Tier 2 (Reputable)**: e.g., nytimes.com, github.com (1.12x boost)
-- **Suspicious/Free Hosts**: e.g., .xyz, blogspot.com (Penalized)
-- **Denylist**: Hard blocked (0.0 multiplier)
+### 3. Exa
 
-### [6] Time-Boxed Fetching (`fetcher.py` & `pipeline.py`)
-To prevent a single slow website from freezing the chatbot, `pipeline.py` uses a **Time-Boxed Hybrid Loop**. 
-- It kicks off fetches for the top `num_urls + 2` semantic hits concurrently.
-- It waits a maximum of **5.0 seconds**.
-- If `num_urls` fast websites finish before the timeout, it stops waiting early.
-- To guarantee quality, the collected fast websites are ordered by their original semantic rank.
+Exa is the primary provider. It uses fast search and requests one text body for each result:
 
-Fetch methods race or fallback gracefully:
-- **MediaWiki API**: Used for known wikis.
-- **Jina Reader**: Fallback for JS-heavy sites.
-- **Trafilatura**: Fast direct HTML extraction.
-- **Native APIs**: Bypasses Cloudflare on supported sites (like Reddit) using direct JSON endpoints instead of scraping.
+- At most five results
+- Up to 8,000 characters requested per result
+- Search and content returned in one API response
+- No automatic retry that could spend another search credit
 
-A per-host cache remembers which fetcher succeeded last time, avoiding redundant fallback attempts and saving significant latency.
+The pipeline continues to Tavily only when Exa does not provide enough usable material.
 
-### [7] Tiered Acceptance & Content Quality Gates
-To avoid returning an empty context or garbage SEO text, content goes through layered filters:
-1. **Content Quality Gate**: Fast post-fetch regex checks reject pages with extreme ad/affiliate-link density (>5 per 1000 chars), hidden quote-farm templates, or high repetition ratios.
-2. **Strict Relevance**: Content must mention the anchor entity ≥3× and repeat half the query terms.
-3. **Relaxed Relevance**: Any on-entity full content (anchor present at all).
-4. **Snippet Fallback**: DDG snippets, preferring those that name the entity.
+### 4. Tavily
 
-## Reliability & Quality Features
-- **Zero-Latency Pre-Fetch Filtering**: `is_trash_url` uses fast regex to detect and drop SEO garbage (e.g., keyword-stuffed slugs, quote farms) *before* wasting network bandwidth or fetch slots on them.
-- **Runtime Domain Learning**: A persistent, disk-backed LRU cache (`.tranco_cache/domain_learning.json`) tracks fetch success ratios. Domains that fail 3 times consecutively are auto-blocked for increasing durations (exponential backoff), preventing the pipeline from repeatedly stalling on Cloudflare-heavy sites.
-- **Concurrent Provider Racing**: LLM rewrites race Ollama vs NIM, falling back seamlessly if one provider is down (note: embeddings now run safely locally).
-- **Hard Context Limits**: The final text is strictly truncated to 25,000 characters to protect the LLM context window.
-- **Shared Request Deadline**: A single soft deadline (~17s, under the 20s hard ceiling) is threaded through the search cascade, fallback cascade, semantic rerank, and fetch loop. Each stage clamps its own timeout against the remaining budget instead of assuming a fresh window, so a slow early stage shrinks — rather than blows past — the time left for later stages.
-- **SearXNG Circuit Breaker**: After 3 consecutive SearXNG failures, requests skip it entirely for a 30s cooldown instead of paying its full internal timeout on every call during an outage.
-- **Negative Caching**: Empty results and hard timeouts are cached for 30s (vs. the normal 5-minute TTL), absorbing bursty repeat requests without redoing the full pipeline, while recovering quickly once the underlying issue clears.
-- **Embedder Load Backoff**: If the local embedding model fails to load, retries back off for 30s instead of re-attempting the load on every request.
-- **Bounded Search Retries**: DuckDuckGo's internal retry loop is capped at 2 attempts with short backoff, since the caller already wraps it in a hard per-phase timeout.
+Tavily is the secondary provider. It uses:
 
-## Configuration Defaults
+- `search_depth: basic`
+- `include_raw_content: markdown`
+- At most five results
+- No generated answer or images
 
-- `defaults.max_search_urls`: 5 sources per query
-- Fetch max chars: 20000
-- Jina timeout: 5.0s
-- Rewrite race timeout: 5.0s
-- Embed model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (changing this requires a restart).
+Tavily is not raced with Exa. It is called only after the Exa result is inadequate.
 
-## Setup
-On first boot, the system will download the fastembed model (~220MB). If running in Docker, pre-download it during the build step:
-`RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"`
+### 5. Firecrawl
+
+Firecrawl has two bounded roles:
+
+1. **Search fallback:** if Exa and Tavily return no candidates, Firecrawl Search requests up to five results with main-content Markdown.
+2. **Targeted repair:** Firecrawl Scrape fills missing or invalid bodies for URLs already selected by the pipeline, only while deadline and repair capacity remain.
+
+Usable content from an earlier provider is retained if a later call fails or times out. This makes Firecrawl a reserve rather than an automatic five-page scrape on every query.
+
+## Validation and ranking
+
+A provider body is considered usable only when it contains at least 250 characters and does not resemble a common access-denied or JavaScript challenge page. Results also pass through:
+
+- Social/login-heavy host filtering
+- Runtime domain blocking for repeated failures
+- URL spam and content-quality heuristics
+- Local semantic reranking with domain-trust multipliers
+- Relevance gates based on the rewritten query and detected entity
+
+If semantic embeddings are unavailable or exceed their time budget, the pipeline falls back to heuristic ordering. Snippets can backfill a source when full extraction is unavailable.
+
+Each page body is capped at 20,000 characters, and the assembled context is bounded before it is injected into the model prompt.
+
+## Reliability behavior
+
+- **Global deadline:** the complete retrieval run is capped at 15 seconds.
+- **Sequential providers:** later providers are skipped once enough content is available.
+- **Best-effort return:** partial usable content survives later failures and timeouts.
+- **Circuit breakers:** repeated provider transport/server failures temporarily skip that provider.
+- **Negative caching:** short-lived empty results absorb bursts without hiding provider recovery for long.
+- **Connection reuse:** all hosted integrations share an asynchronous HTTP connection pool.
+- **No local scraper service:** the active path needs neither Docker nor a browser runtime.
+
+## Configuration
+
+`defaults.max_search_urls` in `config.yaml` controls the requested source count, with the hosted provider calls capped at five. The provider credentials are read from the project-root `.env` file:
+
+```dotenv
+EXA_API_KEY="your_api_key_here"
+TAVILY_API_KEY="your_api_key_here"
+FIRECRAWL_API_KEY="your_api_key_here"
+```
+
+All three keys are needed for the complete fallback chain. A provider with no configured key is skipped, so the application can still run with a partial chain.
+
+On first boot, `fastembed` downloads the configured ONNX embedding model. The model can be changed through `embed_model_fastembed` in `config.yaml`; restart the application after changing it.

@@ -8,11 +8,11 @@ import {
   downloadBtn, topStarBtn,
   duoToggleBtn, duoModelSelectorBtn, duoModelSep,
   collapsedStarList, collapsedRecentList,
-  PROVIDERS, getModelProvider, providerHasKey,
+  PROVIDERS, getModelProvider, getProviderDefaultModel, providerHasKey,
 } from './state.js';
 import { api } from './api.js';
 import { clearPendingFiles } from './files.js';
-import { updateModelLabel, updateDuoModelLabel, updatePersonaLabel } from './models.js';
+import { updateModelLabel, updateDuoModelLabel, updatePersonaLabel } from './models.js?v=1.3';
 import { appendMessage, injectRetryDuoButton, streamNewMessage } from './messages.js';
 
 const GREETINGS = [
@@ -261,6 +261,16 @@ function openContextMenu(e, chat, titleEl) {
     closeContextMenu();
     downloadChat(chat.id);
   };
+  $('ctxDuplicate').onclick = async (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    const res = await api(`/chats/${chat.id}/duplicate`, { method: 'POST' });
+    await loadChats();
+    if (res && res.id) {
+      openChat(res.id);
+    }
+  };
+
   $('ctxDelete').onclick = async (ev) => {
     ev.stopPropagation();
     closeContextMenu();
@@ -434,12 +444,14 @@ export async function openChat(chatId) {
     if (lastModel2) {
       state.selectedModel2 = lastModel2;
     } else if (!state.selectedModel2) {
-      state.selectedModel2 = state.selectedModel;
+      const provider = getModelProvider(state.selectedModel);
+      state.selectedModel2 = getProviderDefaultModel(provider) || state.selectedModel;
     }
     updateDuoModelLabel();
   }
 
   messageInput.focus();
+  startCompactionPolling();
 }
 
 export async function createNewChat() {
@@ -503,7 +515,33 @@ export async function sendMessage() {
   endStreaming();
   updateSendBtn();
   messageInput.focus();
+  startCompactionPolling();
   await loadChats();
+}
+
+let compactionPollingInterval = null;
+
+export function startCompactionPolling() {
+  if (compactionPollingInterval) clearInterval(compactionPollingInterval);
+  if (!state.activeChatId) return;
+
+  const popup = $('compactionPopup');
+  
+  compactionPollingInterval = setInterval(async () => {
+    try {
+      const res = await api(`/chats/${state.activeChatId}/compacting`);
+      if (res && res.compacting === 1) {
+        popup.style.display = 'flex';
+      } else if (res && res.compacting === 0) {
+        popup.style.display = 'none';
+        clearInterval(compactionPollingInterval);
+        compactionPollingInterval = null;
+      }
+    } catch (e) {
+      clearInterval(compactionPollingInterval);
+      compactionPollingInterval = null;
+    }
+  }, 1000);
 }
 
 export function confirmDialog(message, okText = 'Delete', okBtnClass = 'btn-danger') {
@@ -587,7 +625,8 @@ export function toggleDuo() {
 
   // Seed model2 if not set
   if (state.duoMode && !state.selectedModel2) {
-    state.selectedModel2 = state.selectedModel;
+    const provider = getModelProvider(state.selectedModel);
+    state.selectedModel2 = getProviderDefaultModel(provider) || state.selectedModel;
     updateDuoModelLabel();
   }
 }
@@ -678,4 +717,3 @@ export async function downloadChat(targetId) {
     console.error('Failed to download chat:', e);
   }
 }
-

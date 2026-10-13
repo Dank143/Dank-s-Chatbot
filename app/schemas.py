@@ -55,6 +55,7 @@ class SendMessageBody(ApiRequest):
     documents: list[DocumentAttachment] | None = None
 
     web_search: bool = False
+    ai_search_gate: bool = True
     client_time: str | None = None
     skip_user_save: bool = False
     duo_side: int = 0
@@ -71,6 +72,7 @@ class RegenerateBody(ApiRequest):
     """Options used to regenerate an assistant response."""
     model: str | None = None
     web_search: bool = False
+    ai_search_gate: bool = True
     client_time: str | None = None
     overwrite_message_id: str | None = None
     duo_side: int = 0

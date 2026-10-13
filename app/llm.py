@@ -15,14 +15,12 @@ logger = logging.getLogger(__name__)
 
 class AttachmentData(TypedDict):
     """Normalized image and document attachments stored with a user message."""
-
     images: list[Any]
     documents: list[dict[str, Any]]
 
 
 class ConversationRow(TypedDict):
     """History fields required to construct an LLM request."""
-
     role: str
     content: str
     attachments: str | None
@@ -75,22 +73,23 @@ def is_asking_about_creator(text: str) -> str | None:
 
 
 async def race_models(
-    primary_task: asyncio.Task[Any] | None,
-    backup_task: asyncio.Task[Any] | None,
+    tasks: list[tuple[asyncio.Task[Any] | None, str]],
     timeout: float = 5.0,
     logger: logging.Logger | None = None,
     task_name: str = "task",
-    primary_name: str = "Primary",
-    backup_name: str = "Backup",
 ) -> Any | None:
     """
-    Run two tasks (primary and backup) with an overall timeout.
-    Returns the result of primary if it succeeds.
-    If primary fails or times out, returns backup if it succeeds.
-    Returns None if both fail or timeout.
+    Run tasks in priority order with an overall timeout.
+    Returns the result of the highest-priority task that succeeds.
+    If a higher-priority task fails or times out, falls back to the next.
     """
     start_time = time.monotonic()
-    pending = {t for t in (primary_task, backup_task) if t}
+    
+    # Filter out None tasks
+    valid_tasks = [(t, n) for t, n in tasks if t is not None]
+    if not valid_tasks:
+        return None
+        
     log = logger or logging.getLogger(__name__)
 
     def _safe_result(task: asyncio.Task[Any]) -> Any | None:
@@ -104,6 +103,9 @@ async def race_models(
         s = repr(val)
         return s if len(s) < 200 else s[:197] + "..."
 
+    pending = {t for t, _ in valid_tasks}
+    completed_results: dict[asyncio.Task, Any] = {}
+    
     while pending:
         elapsed = time.monotonic() - start_time
         remaining = timeout - elapsed
@@ -114,25 +116,32 @@ async def race_models(
         if not done:
             break
 
-        if primary_task in done:
-            res = _safe_result(primary_task)
-            if res:
-                log.info("%s was used for %s: %s", primary_name, task_name, _short_repr(res))
-                return res
-                
-        if backup_task and backup_task in done:
-            res = _safe_result(backup_task)
-            if res:
-                if primary_task in pending:
-                    prim_done, _ = await asyncio.wait([primary_task], timeout=0.4)
-                    if primary_task in prim_done:
-                        n_res = _safe_result(primary_task)
-                        if n_res:
-                            log.info("%s finished in grace window and was used for %s: %s", primary_name, task_name, _short_repr(n_res))
-                            return n_res
-                log.info("%s timed out or failed, %s used for %s: %s", primary_name, backup_name, task_name, _short_repr(res))
-                return res
+        for t in done:
+            res = _safe_result(t)
+            if res is not None:
+                completed_results[t] = res
 
+        for i, (t, name) in enumerate(valid_tasks):
+            if t in completed_results:
+                higher_pending = [ht for ht, _ in valid_tasks[:i] if ht in pending]
+                if higher_pending:
+                    grace_done, _ = await asyncio.wait(higher_pending, timeout=0.4)
+                    for ht in grace_done:
+                        h_res = _safe_result(ht)
+                        if h_res is not None:
+                            h_name = next(n for t_obj, n in valid_tasks if t_obj == ht)
+                            for p in pending: p.cancel()
+                            log.info("%s finished in grace window and was used for %s: %s", h_name, task_name, _short_repr(h_res))
+                            return h_res
+                
+                for p in pending: p.cancel()
+                log.info("%s was used for %s: %s", name, task_name, _short_repr(completed_results[t]))
+                return completed_results[t]
+                
+            elif t in pending:
+                break 
+
+    for p in pending: p.cancel()
     log.warning("%s fully failed or timed out.", task_name.capitalize())
     return None
 
@@ -400,7 +409,7 @@ async def llm_stream(
 
         if last_exc is not None:
             logger.warning("llm_stream error model=%s finish=%s raw=%d: %s", model, finish_reason, sum(len(c) for c in raw_chunks), last_exc)
-            err_msg = "The model is currently overloaded — too many requests. Wait a moment then try again, or switch to another model." if _is_rate_limit(last_exc) else str(last_exc)
+            err_msg = str(last_exc)
             yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
             return
 

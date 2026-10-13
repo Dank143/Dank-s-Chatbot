@@ -47,6 +47,16 @@ async def get_chat(chat_id: str):
     return await run_db_task(_task)
 
 
+@router.get("/{chat_id}/compacting")
+async def get_chat_compacting_status(chat_id: str):
+    def _task(conn):
+        chat = conn.execute("SELECT compacting FROM chats WHERE id=?", (chat_id,)).fetchone()
+        if not chat:
+            raise HTTPException(404, "Chat not found")
+        return {"compacting": chat["compacting"]}
+    return await run_db_task(_task)
+
+
 @router.patch("/{chat_id}")
 async def update_chat(chat_id: str, body: UpdateChatBody):
     def _task(conn):
@@ -79,3 +89,54 @@ async def update_chat(chat_id: str, body: UpdateChatBody):
 async def delete_chat(chat_id: str):
     await db_execute("DELETE FROM chats WHERE id=?", (chat_id,))
     return {"success": True}
+
+
+@router.post("/{chat_id}/duplicate")
+async def duplicate_chat(chat_id: str):
+    import re
+
+    def _task(conn):
+        chat = conn.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
+        if not chat:
+            raise HTTPException(404, "Chat not found")
+        
+        base_title = chat["title"]
+        match = re.search(r' \((\d+)\)$', base_title)
+        if match:
+            n = int(match.group(1))
+            new_title = base_title[:match.start()] + f" ({n+1})"
+        else:
+            new_title = base_title + " (1)"
+            
+        new_chat_id = str(uuid.uuid4())
+        ts = now_iso()
+        
+        conn.execute(
+            """INSERT INTO chats (
+                id, title, model, model2, starred, created_at, updated_at, 
+                duo_mode, persona, persona2, summary, summary2, summary_msg_id, summary_msg_id2, compacting
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                new_chat_id, new_title, chat["model"], chat["model2"], chat["starred"], 
+                ts, ts, chat["duo_mode"], chat["persona"], chat["persona2"], 
+                chat["summary"], chat["summary2"], chat["summary_msg_id"], chat["summary_msg_id2"], 0
+            )
+        )
+        
+        msgs = conn.execute("SELECT * FROM messages WHERE chat_id=? ORDER BY created_at", (chat_id,)).fetchall()
+        for msg in msgs:
+            msg_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO messages (
+                    id, chat_id, role, content, created_at, attachments, model, 
+                    duo_side, search_data, timing_data, persona
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    msg_id, new_chat_id, msg["role"], msg["content"], msg["created_at"], 
+                    msg["attachments"], msg["model"], msg["duo_side"], 
+                    msg["search_data"], msg["timing_data"], msg["persona"]
+                )
+            )
+        return {"id": new_chat_id}
+
+    return await run_db_task(_task)

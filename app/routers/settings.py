@@ -104,13 +104,9 @@ async def verify_key(body: VerifyKeyBody):
     if not key:
         return {"valid": False, "error": "API key cannot be empty."}
     try:
-        # Use a small generic model for verification.
-        if body.provider == "nim":
-            verify_model = "meta/llama-3.1-8b-instruct"
-        elif body.provider == "cloudflare":
-            verify_model = "@cf/meta/llama-3.1-8b-instruct-fp8"
-        else:
-            verify_model = "minimax-m3:cloud"
+        verify_model = provider_default_model(body.provider)
+        if not verify_model:
+            return {"valid": False, "error": f"No verification model is configured for {body.provider}."}
         
         base_url_str = body.base_url.strip()
         if body.provider == "cloudflare" and body.account_id:
@@ -147,10 +143,8 @@ def update_settings(body: UpdateSettingsBody):
     text = CONFIG_PATH.read_text(encoding="utf-8")
     if body.base_url is not None:
         text = replace_scalar(text, f"api_{prov}", "base_url", body.base_url.strip())
-    if body.account_id is not None:
-        text = replace_scalar(text, f"api_{prov}", "account_id", body.account_id.strip())
-        if prov == "cloudflare":
-            set_env_var("CLOUDFLARE_ACCOUNT_ID", body.account_id.strip())
+    if body.account_id is not None and prov == "cloudflare":
+        set_env_var("CLOUDFLARE_ACCOUNT_ID", body.account_id.strip())
     if body.temperature is not None:
         text = replace_scalar(text, "defaults", "temperature", str(round(body.temperature, 2)))
     CONFIG_PATH.write_text(text, encoding="utf-8")
@@ -159,9 +153,7 @@ def update_settings(body: UpdateSettingsBody):
 
 @router.get("/personas")
 async def list_personas():
-    """
-    Returns a list of available persona names based on files in the personas directory.
-    """
+    """Returns a list of available persona names based on files in the personas directory."""
     personas = get_personas()
     
     persona_list = [

@@ -27,7 +27,7 @@ A self-hosted AI chat interface powered by [NVIDIA NIM](https://build.nvidia.com
 - **Copy & download** — copy button on messages and code blocks; download button on code blocks
 - **Image attachments** — attach images or paste copied pictures and screenshots directly into the input; passed as base64 to vision-capable models
 - **Document attachments** — attach PDF, DOCX, PPTX, XLSX, or plain text files (25 MB maximum); text is extracted and sent as context (up to 143 000 chars)
-- **Web search** — globe toggle enables live search via SearXNG cascade (fallback to DuckDuckGo/Tavily) + Jina Reader / Trafilatura; semantic reranking via local ONNX embeddings (`fastembed`); auto-triggers on search-intent phrases; per-chat state in `localStorage`
+- **Web search** — globe toggle enables a hosted Exa → Tavily → Firecrawl search-and-extraction cascade with a 15-second deadline; results are reranked through local ONNX embeddings (`fastembed`), and search can auto-trigger from intent phrases
 - **Dark / light theme** toggle, persisted in `localStorage`
 - **Settings modal** — configure API key, base URL, generation temperature, and UI behaviors (like auto-scrolling); key verification built in
 - **Voice input** — microphone button for hands-free message dictation via the Web Speech API
@@ -55,8 +55,8 @@ Dank's Chatbot/
 │   │   └── settings.py  # Models, settings, warmup, and key verification
 │   └── search/
 │       ├── pipeline.py        # Search orchestration and context assembly
-│       ├── engines.py         # SearXNG, DuckDuckGo, and Tavily integrations
-│       ├── fetcher.py         # Page-content retrieval and extraction
+│       ├── engines.py         # Exa, Tavily, and Firecrawl integrations
+│       ├── fetcher.py         # Content validation, truncation, and URL filtering
 │       ├── llm_processing.py  # Query rewriting and semantic reranking
 │       ├── embedder.py        # Local fastembed/ONNX embeddings
 │       ├── domain_trust.py    # URL/content quality and trust scoring
@@ -65,8 +65,6 @@ Dank's Chatbot/
 ├── config.yaml          # Model lists, API configuration, and defaults
 ├── .system_prompt       # Optional system-prompt override (plain text)
 ├── personas/            # Text files defining dynamic personas
-├── searxng/             # Local SearXNG configuration
-├── docker-compose.yml   # Docker setup for local SearXNG
 ├── requirements.txt
 ├── icon/                # Provider icons served at /icon/*
 ├── chatbot.db           # Local SQLite chat database (created at runtime)
@@ -119,8 +117,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-*(Optional: To enable fetching content from Cloudflare-protected sites like Reddit during web search, also install Patchright: `pip install patchright` then `patchright install chromium`)*
-
 **3. Configure your API key**
 
 Create a `.env` file in the project root:
@@ -130,10 +126,12 @@ NVIDIA_API_KEY=nvapi-YOUR_KEY_HERE
 OLLAMA_API_KEY=your-ollama-key        # optional, for Ollama provider
 CLOUDFLARE_API_KEY=your-cf-key        # optional, for Cloudflare provider
 CLOUDFLARE_ACCOUNT_ID=your-account-id # required for Cloudflare
-TAVILY_API_KEY=tvly-YOUR_KEY_HERE     # optional, for web search fallback
+EXA_API_KEY=your-exa-key              # primary web-search provider
+TAVILY_API_KEY=your-tavily-key        # secondary web-search provider
+FIRECRAWL_API_KEY=your-firecrawl-key  # final search/extraction fallback
 ```
 
-Or set it later via the Settings modal in the UI — changes are written back to `.env` automatically.
+Model-provider credentials can also be set later through the Settings modal. Search-provider keys are read from `.env`; restart the server after editing them.
 
 For local Ollama without authentication, just set the base URL to `http://localhost:11434` in Settings — no key needed.
 
@@ -141,14 +139,7 @@ For local Ollama without authentication, just set the base URL to `http://localh
 
 Create a `.system_prompt` file in the project root and write your prompt as plain text. If the file exists it overrides the `system_prompt` field in `config.yaml`. You can also add `.txt` files to the `personas/` directory to create new dynamic personas available in the UI.
 
-**5. (Optional) Start Local SearXNG**
-
-For the best web search experience without rate limits, start the bundled SearXNG instance using Docker:
-```bash
-docker-compose up -d
-```
-
-**6. Run the server**
+**5. Run the server**
 
 ```bash
 uvicorn app.main:app --reload
@@ -167,7 +158,9 @@ NVIDIA_API_KEY=nvapi-...
 OLLAMA_API_KEY=...          # optional
 CLOUDFLARE_API_KEY=...      # optional
 CLOUDFLARE_ACCOUNT_ID=...   # required for Cloudflare
-TAVILY_API_KEY=...          # optional
+EXA_API_KEY=...             # primary search + content
+TAVILY_API_KEY=...          # secondary search + raw content
+FIRECRAWL_API_KEY=...       # final fallback and page repair
 ```
 
 Environment variables `NVIDIA_BASE_URL`, `OLLAMA_BASE_URL` / `OLLAMA_HOST`, `CLOUDFLARE_BASE_URL`, and `CLOUDFLARE_ACCOUNT_ID` can also override settings.
@@ -197,7 +190,7 @@ defaults:
   temperature: 0.5            # 0 = deterministic, 1 = creative
   system_prompt: ""           # fallback if .system_prompt file absent
 
-# ... default models, title models, and embed_model_fastembed definitions
+# ... default models, title models, compact_model, and embed_model_fastembed definitions
 
 models_nim:
   - id: meta/llama-3.3-70b-instruct
@@ -245,13 +238,13 @@ Web search also **auto-triggers** when the message contains high-confidence sear
 
 When triggered, the backend:
 1. **Rewrites** the user message into a standalone search query. Uses a regex fast-path for obvious intents (media, documentation, dictionary, opinion) to skip the LLM overhead. For complex queries, uses a fast LLM (races Ollama and NIM via `config.yaml`) to resolve pronouns and determine intent.
-2. **Routes** to the best source based on intent: YouTube (media), documentation, or auto-discovered entity wikis (Wikipedia, Fandom, game wikis)
-3. **Queries Engines**: Uses a staggered cascade, triggering local SearXNG -> DuckDuckGo -> Tavily API sequentially to ensure fast results while falling back gracefully.
-4. **Fetches page content** by racing fetchers per URL (first success wins): [Jina Reader](https://jina.ai/reader/) or Trafilatura; per-host caching avoids re-probing failed fetchers
-5. **Reranks** results using local ONNX embeddings via `fastembed`; falls back to keyword priority heuristic
-6. **Injects** retrieved context + citation instructions into the conversation before calling the model
+2. **Routes** documentation, dictionary, wiki, and general intents into a provider-ready query.
+3. **Queries providers sequentially**: Exa first, Tavily only when Exa is inadequate, then Firecrawl Search only when neither earlier provider returns any candidates.
+4. **Repairs incomplete pages** through Firecrawl Scrape, limited to URLs already returned by the selected provider and only while time remains.
+5. **Reranks** up to five results using local ONNX embeddings via `fastembed`, with a keyword/trust heuristic fallback.
+6. **Injects** the best available context and citation instructions into the conversation before calling the model.
 
-Cloudflare-blocked pages (e.g. Reddit) use Patchright (a stealth fork of Playwright) as a last resort. Social/video domains are skipped (YouTube results return links only). A TTL cache (5 min) prevents duplicate fetches.
+The complete retrieval operation has a shared 15-second deadline. It preserves usable partial content instead of waiting indefinitely for a slow fallback. A five-minute TTL cache and in-flight request coalescing avoid duplicate provider calls.
 
 ---
 
@@ -304,7 +297,7 @@ data: {"type": "error",        "message": "..."}                       # error d
 | Backend | Python 3.11+, FastAPI, Uvicorn |
 | AI API | NVIDIA NIM + Ollama + Cloudflare AI (OpenAI-compatible) via `openai` SDK |
 | Database | SQLite (via `sqlite3` stdlib, WAL mode) |
-| Web Search | SearXNG + DuckDuckGo (`ddgs`) + Tavily API + Jina Reader + Trafilatura + ONNX embeddings (reranking) |
+| Web Search | Exa + Tavily + Firecrawl APIs + ONNX embeddings (reranking) |
 | Document parsing | pypdf, python-docx, python-pptx, openpyxl |
 | Frontend | Vanilla JS (ES modules), CSS custom properties |
 | Markdown / Math | marked.js + highlight.js + KaTeX (CDN) |

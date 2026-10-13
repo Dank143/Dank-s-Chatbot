@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="css/messages.css?v=1.3" />
   <link rel="stylesheet" href="css/input.css?v=1.3" />
   <link rel="stylesheet" href="css/components.css?v=1.3" />
-  <link rel="stylesheet" href="css/modals.css?v=1.3" />
+  <link rel="stylesheet" href="css/modals.css?v=3.0" />
   <link rel="stylesheet" href="css/settings.css?v=1.3" />
   <!-- hljs themes – JS toggles which one is active -->
   <link id="hljsDark" rel="stylesheet"
@@ -130,6 +130,13 @@
 
   <!-- ═══════════════════════════  MAIN  ═══════════════════════════════ -->
   <main class="main" id="main">
+
+    <!-- Compacting popup -->
+    <div class="compaction-popup" id="compactionPopup" style="display:none">
+      <div class="compaction-spinner"></div>
+      <span>Auto-compacting memory</span>
+      <!-- <span class="thinking-dots"></span> -->
+    </div>
 
     <!-- top bar -->
     <header class="topbar">
@@ -257,7 +264,12 @@
         <div class="attachment-previews" id="attachmentPreviews"></div>
         <textarea id="messageInput" placeholder="Write a message…" rows="1" maxlength="32000"></textarea>
         <div class="input-actions">
-          <button class="icon-btn web-search-btn" id="webSearchToggle" type="button" title="Web Search: OFF">
+          <button class="icon-btn ai-search-btn active" id="aiSearchToggle" type="button" title="AI Search Gate: ON">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+            </svg>
+          </button>
+          <button class="icon-btn web-search-btn" id="webSearchToggle" type="button" title="Force Web Search: OFF">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
@@ -290,15 +302,34 @@
               <line x1="12" y1="3" x2="12" y2="21"/>
             </svg>
           </button>
-          <button class="model-selector-btn" id="modelSelectorBtn" type="button">
-            <span id="modelSelectorBadge" class="provider-badge"></span>
-            <span id="modelSelectorLabel">Loading…</span>
-          </button>
-          <div class="duo-model-sep" id="duoModelSep" style="display:none">vs</div>
-          <button class="model-selector-btn duo-model-selector-btn" id="duoModelSelectorBtn" type="button" style="display:none">
-            <span id="duoModelSelectorBadge" class="provider-badge"></span>
-            <span id="duoModelSelectorLabel">Pick model…</span>
-          </button>
+          <div class="model-selectors-wrapper" style="position: relative; display: flex; align-items: center; gap: 8px;">
+            <button class="model-selector-btn" id="modelSelectorBtn" type="button">
+              <span id="modelSelectorBadge" class="provider-badge"></span>
+              <span id="modelSelectorLabel">Loading…</span>
+            </button>
+            <div class="duo-model-sep" id="duoModelSep" style="display:none">vs</div>
+            <button class="model-selector-btn duo-model-selector-btn" id="duoModelSelectorBtn" type="button" style="display:none">
+              <span id="duoModelSelectorBadge" class="provider-badge"></span>
+              <span id="duoModelSelectorLabel">Pick model…</span>
+            </button>
+            <div id="dropdownBackdrop" style="display: none; position: fixed; inset: 0; z-index: 100;"></div>
+            <div class="model-dropup" id="modelDropdown" style="display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 101;">
+              <div class="provider-select-wrap">
+                <button type="button" class="provider-select-btn" id="providerSelectBtn">
+                  <span id="providerSelectLabel">NVIDIA NIM</span>
+                </button>
+                <div class="provider-select-menu" id="providerSelectMenu" style="display: none;">
+                  <button class="provider-opt" data-provider="nim">NVIDIA NIM</button>
+                  <button class="provider-opt" data-provider="ollama">Ollama Cloud</button>
+                  <button class="provider-opt" data-provider="cloudflare">Cloudflare AI</button>
+                </div>
+              </div>
+              <div class="model-dropup-body" id="dropdownList"></div>
+              <div class="model-dropup-scrollbar" id="modelDropdownScrollbar" aria-hidden="true">
+                <div class="model-dropup-scrollbar-thumb"></div>
+              </div>
+            </div>
+          </div>
           <button class="send-btn" id="sendBtn" title="Send" disabled>
             <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2.5">
@@ -374,35 +405,6 @@
     </div>
   </div>
 
-  <!-- ═══════════════════════════  MODEL PICKER MODAL  ════════════════ -->
-  <div class="modal-backdrop" id="dropdownBackdrop" style="display:none">
-    <div class="model-picker-modal" id="modelDropdown">
-      <div class="model-picker-header">
-        <h3>Models selection <span style="font-size: 0.88em; font-weight: normal;">(those with * are vision-enabled)</span></h3>
-        <button class="icon-btn" id="modelModalCloseBtn" title="Close">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-      <div class="model-search-wrap">
-        <div class="search-input-wrapper">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-input-icon">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-          <input type="text" id="modelSearch" class="search-input-field" placeholder="Search models…" autocomplete="off" />
-        </div>
-        <div class="provider-pill" id="pickerProviderPill">
-          <button class="pill-opt active" data-provider="nim">NVIDIA NIM</button>
-          <button class="pill-opt" data-provider="ollama">Ollama Cloud</button>
-          <button class="pill-opt" data-provider="cloudflare">Cloudflare AI</button>
-        </div>
-      </div>
-      <div class="model-picker-body" id="dropdownList"></div>
-    </div>
-  </div>
 
   <!-- ═══════════════════════════  PERSONA PICKER MODAL  ════════════════ -->
   <div class="modal-backdrop" id="personaDropdownBackdrop" style="display:none">
@@ -416,7 +418,7 @@
           </svg>
         </button>
       </div>
-      <div class="model-picker-body model-grid" id="personaDropdownList" style="grid-template-columns: repeat(2, 1fr);"></div>
+      <div class="persona-wheel-body" id="personaDropdownList"></div>
     </div>
   </div>
 
@@ -587,6 +589,13 @@
       </svg>
       <span>Download</span>
     </div>
+    <div class="context-menu-item" id="ctxDuplicate" role="menuitem">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <span>Duplicate</span>
+    </div>
     <div class="context-menu-divider"></div>
     <div class="context-menu-item text-danger" id="ctxDelete" role="menuitem">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -599,7 +608,7 @@
   </div>
 
 
-  <script type="module" src="js/app.js?v=1.2"></script>
+  <script type="module" src="js/app.js?v=1.6"></script>
 </body>
 
 </html>

@@ -19,7 +19,6 @@ CONFIG_STAT_TTL_SECONDS: float = 5.0
 
 class ProviderApiConfig(TypedDict):
     """Resolved connection settings for an OpenAI-compatible provider."""
-
     key: str
     base_url: str
     account_id: str
@@ -27,7 +26,6 @@ class ProviderApiConfig(TypedDict):
 
 class ModelConfig(TypedDict, total=False):
     """The model metadata consumed by provider selection and the UI."""
-
     id: str
     name: str
     icon: str
@@ -44,7 +42,6 @@ _config_checked: float = 0.0
 _yaml_nim_key: str = ""   # YAML fallback key
 _yaml_ollama_key: str = ""
 _yaml_cloudflare_key: str = ""
-_yaml_cloudflare_account_id: str = ""
 # model_id -> (provider, model_entry) for O(1) lookups
 _model_index: dict[str, tuple[str, ModelConfig]] = {}
 
@@ -58,7 +55,7 @@ ENV_KEY_BY_PROVIDER: dict[str, str] = {
 
 def load_config() -> ConfigData:
     """Return cached config.yaml, re-reading only when the file's mtime changes."""
-    global _config_cache, _config_mtime, _config_checked, _yaml_nim_key, _yaml_ollama_key, _yaml_cloudflare_key, _yaml_cloudflare_account_id, _model_index
+    global _config_cache, _config_mtime, _config_checked, _yaml_nim_key, _yaml_ollama_key, _yaml_cloudflare_key, _model_index
     now = time.monotonic()
     if now - _config_checked >= CONFIG_STAT_TTL_SECONDS:
         _config_checked = now
@@ -73,7 +70,6 @@ def load_config() -> ConfigData:
             _yaml_nim_key = _config_cache.get("api_nim", {}).get("key", "")
             _yaml_ollama_key = _config_cache.get("api_ollama", {}).get("key", "")
             _yaml_cloudflare_key = _config_cache.get("api_cloudflare", {}).get("key", "")
-            _yaml_cloudflare_account_id = _config_cache.get("api_cloudflare", {}).get("account_id", "")
             # Rebuild the model index on config reload.
             idx: dict[str, tuple[str, ModelConfig]] = {}
             for provider in PROVIDERS:
@@ -94,7 +90,7 @@ def load_config() -> ConfigData:
     env_cloudflare = os.environ.get("CLOUDFLARE_API_KEY", "")
     _config_cache.setdefault("api_cloudflare", {})["key"] = env_cloudflare or _yaml_cloudflare_key
     env_cf_account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-    _config_cache.setdefault("api_cloudflare", {})["account_id"] = env_cf_account or _yaml_cloudflare_account_id
+    _config_cache.setdefault("api_cloudflare", {})["account_id"] = env_cf_account
     if SYSTEM_PROMPT_PATH.exists():
         _config_cache.setdefault("defaults", {})["system_prompt"] = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
     return _config_cache
@@ -142,7 +138,10 @@ def provider_default_model(provider: str) -> str:
     """Return the default model ID for the given provider."""
     cfg = load_config()
     models = provider_models(provider)
-    return cfg.get(f"default_model_{provider}") or (models[0]["id"] if models else "")
+    defaults = cfg.get("default_model", {})
+    if isinstance(defaults, dict):
+        return defaults.get(provider) or (models[0]["id"] if models else "")
+    return (models[0]["id"] if models else "")
 
 
 def provider_for_model(model_id: str) -> str:

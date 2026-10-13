@@ -2,17 +2,17 @@ import {
   state, $,
   messagesEl, inputAreaEl, messageInput, renameBtn, downloadBtn, topStarBtn, chatTitleDisplay,
   dropdownBackdrop, personaDropdownBackdrop, personaSelectorBtn, modelSearch, lightbox, lightboxImg,
-  autoResize, updateSendBtn, setWebSearch, setProvider, scrollToBottom,
+  autoResize, updateSendBtn, setWebSearch, setAiSearchGate, setProvider, scrollToBottom,
   collapsedNewChatBtn, collapsedStarBtn, collapsedRecentBtn,
   duoToggleBtn, duoModelSelectorBtn, PROVIDER_UI_CONFIG, getProviderModels
 } from './state.js';
 import { api } from './api.js';
-import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel, openPersonaDropdown, closePersonaDropdown } from './models.js';
+import { openDropdown, closeDropdown, renderDropdownList, updateModelLabel, openPersonaDropdown, closePersonaDropdown } from './models.js?v=1.3';
 import {
   readFileAsDataUrl, readFileAsText, isImageFile, isTextFile,
   renderPendingFiles, openDocViewer, closeDocViewer, _docStore,
 } from './files.js';
-import { openSettings, closeSettings, saveSettings, updateTempSlider, setKeyStatus, refreshApiKeyWarning } from './settings.js';
+import { openSettings, closeSettings, saveSettings, updateTempSlider, setKeyStatus, refreshApiKeyWarning } from './settings.js?v=1.1';
 import { toggleTheme } from './theme.js';
 import {
   sendMessage, showWelcome, loadChats, startInlineRename, toggleSidebar, toggleDuo, confirmDialog, downloadChat, closeContextMenu
@@ -86,6 +86,8 @@ export function setupEventListeners() {
   });
   ro.observe(inputAreaEl);
 
+  setAiSearchGate(state.aiSearchGate);
+
   $('newChatBtn').addEventListener('click', showWelcome);
 
   $('webSearchToggle').addEventListener('click', () => {
@@ -93,6 +95,9 @@ export function setupEventListeners() {
     if (state.activeChatId) {
       localStorage.setItem(`webSearch_${state.activeChatId}`, state.webSearch ? '1' : '0');
     }
+  });
+  $('aiSearchToggle').addEventListener('click', () => {
+    setAiSearchGate(!state.aiSearchGate);
   });
   $('sidebarToggle').addEventListener('click', toggleSidebar);
   $('collapsedSidebarToggle').addEventListener('click', toggleSidebar);
@@ -259,24 +264,7 @@ export function setupEventListeners() {
     if (e.target === dropdownBackdrop) closeDropdown();
   });
 
-  $('modelModalCloseBtn').addEventListener('click', closeDropdown);
 
-  modelSearch.addEventListener('input', () => {
-    const q = modelSearch.value.toLowerCase();
-    // Determine the source list: for the duo right slot, use whichever provider pill is active.
-    let sourceList;
-    if (state._pickingSlot === 'right') {
-      const activePill = document.querySelector('#pickerProviderPill .pill-opt.active');
-      const activeProv = activePill?.dataset?.provider;
-      sourceList = getProviderModels(activeProv);
-    } else {
-      sourceList = state.models;
-    }
-    const filtered = sourceList.filter(
-      (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
-    );
-    renderDropdownList(filtered);
-  });
 
   $('settingsCloseBtn').addEventListener('click', closeSettings);
   $('settingsCancelBtn').addEventListener('click', closeSettings);

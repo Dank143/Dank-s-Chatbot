@@ -18,6 +18,7 @@ export const state = {
   _pickingSlot: 'left',
   pendingFiles: [],
   webSearch: false,
+  aiSearchGate: localStorage.getItem('aiSearchGate') !== '0',
   debugMode: false,
   personas: [],
   defaultPersona: 'default',
@@ -77,6 +78,10 @@ const PROVIDER_STATE_KEYS = {
 
 export function getProviderModels(provider) {
   return state[PROVIDER_STATE_KEYS[provider]?.[0]] || [];
+}
+
+export function getProviderDefaultModel(provider) {
+  return state[PROVIDER_STATE_KEYS[provider]?.[1]] || null;
 }
 
 export function getModelProvider(modelId) {
@@ -180,7 +185,16 @@ export function setWebSearch(on) {
   const btn = $('webSearchToggle');
   if (!btn) return;
   btn.classList.toggle('active', on);
-  btn.title = on ? 'Web Search: ON' : 'Web Search: OFF';
+  btn.title = on ? 'Force Web Search: ON' : 'Force Web Search: OFF';
+}
+
+export function setAiSearchGate(on) {
+  state.aiSearchGate = on;
+  localStorage.setItem('aiSearchGate', on ? '1' : '0');
+  const btn = $('aiSearchToggle');
+  if (!btn) return;
+  btn.classList.toggle('active', on);
+  btn.title = on ? 'AI Search Gate: ON' : 'AI Search Gate: OFF';
 }
 
 export function setAutoSearchDetect(on) {

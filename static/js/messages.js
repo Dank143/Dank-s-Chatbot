@@ -2,7 +2,7 @@ import { state, $, messagesEl, escHtml, escAttr, scrollToBottom, updateSendBtn, 
 import { api } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { DOC_ICON, _docStore, nextDocKey, openDocViewer } from './files.js';
-import { badgeHtml, findModelById } from './models.js';
+import { badgeHtml, findModelById } from './models.js?v=1.3';
 import { streamAssistant, getSearchPanelHtml } from './stream.js';
 import { ICON, getAssistantActions } from './icons.js';
 
@@ -152,7 +152,8 @@ export async function streamNewMessage(content, images = [], documents = []) {
     content,
     images: images.length ? images : undefined,
     documents: documents.length ? documents : undefined,
-    web_search: state.webSearch || needsWebSearch(content) || undefined,
+    web_search: state.webSearch,
+    ai_search_gate: state.aiSearchGate,
     client_time: clientTime(),
     persona: state.selectedPersona,
   };
@@ -494,7 +495,8 @@ export async function retryMessage(btn) {
     `/api/chats/${state.activeChatId}/regenerate`,
     {
       model,
-      web_search: state.webSearch || needsWebSearch(lastUserText) || undefined,
+      web_search: state.webSearch,
+      ai_search_gate: state.aiSearchGate,
       client_time: clientTime(),
       overwrite_message_id: msgId,
       duo_side: parseInt(wrapper.dataset.duoSide || 0),
@@ -533,7 +535,7 @@ export async function retryDuoMessage(btnOrRow) {
   await deleteFollowingTurn(row);
 
   const lastUserText = latestUserText();
-  const webSearch = state.webSearch || needsWebSearch(lastUserText) || undefined;
+  const webSearch = state.webSearch;
   const cTime = clientTime();
 
   beginStreaming();
@@ -549,6 +551,7 @@ export async function retryDuoMessage(btnOrRow) {
       {
         model: wrapper.dataset.model,
         web_search: webSearch,
+        ai_search_gate: state.aiSearchGate,
         client_time: cTime,
         overwrite_message_id: msgId,
         duo_side: parseInt(wrapper.dataset.duoSide || 0),

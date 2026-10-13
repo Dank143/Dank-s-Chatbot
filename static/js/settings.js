@@ -1,6 +1,6 @@
 import { $, state, setAutoSearchDetect, setAutoScroll, setProvider, PROVIDER_UI_CONFIG } from './state.js';
 import { api } from './api.js';
-import { loadModels } from './models.js';
+import { loadModels } from './models.js?v=1.3';
 
 // Show/hide the "no API key" warning banner.
 export async function refreshApiKeyWarning() {

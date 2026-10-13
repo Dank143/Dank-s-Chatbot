@@ -65,16 +65,22 @@ async def _rewrite_query(raw: str, context: str = "") -> dict:
             return None
 
     cfg = await get_cached_config(load_config)
-    nim_model = cfg.get("rewrite_model_nim")
-    ollama_model = cfg.get("rewrite_model_ollama")
+    rewrite_models = cfg.get("rewrite_model", {})
+    nim_model = rewrite_models.get("nim")
+    ollama_model = rewrite_models.get("ollama")
+    cloudflare_model = rewrite_models.get("cloudflare")
     
     nim_task = asyncio.create_task(_fetch(get_client("nim"), nim_model)) if nim_model else None
     ollama_task = asyncio.create_task(_fetch(get_client("ollama"), ollama_model)) if ollama_model else None
+    cloudflare_task = asyncio.create_task(_fetch(get_client("cloudflare"), cloudflare_model)) if cloudflare_model else None
 
     res = await race_models(
-        ollama_task, nim_task,
-        timeout=4.0, logger=_log, task_name="query rewrite",
-        primary_name="Ollama", backup_name="NIM"
+        tasks=[
+            (ollama_task, "Ollama"),
+            (nim_task, "NIM"),
+            (cloudflare_task, "Cloudflare"),
+        ],
+        timeout=2.5, logger=_log, task_name="query rewrite"
     )
     return res if res else {"query": raw, "intent": "general", "entity": ""}
 

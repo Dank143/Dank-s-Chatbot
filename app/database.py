@@ -86,6 +86,17 @@ def init_db() -> None:
         if "persona" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN persona TEXT")
 
+        if "summary" not in chat_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN summary TEXT")
+        if "summary2" not in chat_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN summary2 TEXT")
+        if "summary_msg_id" not in chat_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN summary_msg_id TEXT")
+        if "summary_msg_id2" not in chat_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN summary_msg_id2 TEXT")
+        if "compacting" not in chat_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN compacting INTEGER NOT NULL DEFAULT 0")
+
         # Index: every send/regenerate queries messages by (chat_id, created_at).
         # Without this, SQLite full-scans the entire table on every request.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at)")

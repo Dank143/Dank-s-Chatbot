@@ -1,9 +1,9 @@
 import './speech.js';
 import { loadTheme } from './theme.js';
-import { loadModels, loadPersonas } from './models.js';
-import { loadChats, showWelcome, openChat } from './chat.js';
-import { setupEventListeners } from './events.js';
-import { copyCode, copyMessage, editMessage, retryMessage, retryDuoMessage, downloadCode } from './messages.js';
+import { loadModels, loadPersonas } from './models.js?v=1.3';
+import { loadChats, showWelcome, openChat } from './chat.js?v=1.1';
+import { setupEventListeners } from './events.js?v=1.1';
+import { copyCode, copyMessage, editMessage, retryMessage, retryDuoMessage, downloadCode } from './messages.js?v=1.1';
 import { ChatSearchModal } from './search.js';
 import { state } from './state.js';
 

@@ -39,10 +39,11 @@ CONDITIONAL_HEADERS: frozenset[bytes] = frozenset(
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Warm optional dependencies on startup and release search resources on shutdown."""
     cfg = load_config()
-    nim_title = cfg.get("title_model_nim")
-    ollama_title = cfg.get("title_model_ollama")
+    title_models = cfg.get("title_model", {})
+    nim_title = title_models.get("nim")
+    ollama_title = title_models.get("ollama")
     
-    # Warm aux LLMs and DDG session concurrently at startup.
+    # Warm auxiliary LLMs and local search dependencies concurrently at startup.
     if nim_title:
         asyncio.create_task(_ping_model(nim_title, "nim"))
     if ollama_title:
